@@ -2,6 +2,10 @@ import argparse as ap
 
 from hydra import compose, initialize
 from omegaconf import DictConfig
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 from ._cli import (
     add_arguments_emb,
@@ -49,10 +53,10 @@ def load_hydra_config(method: str, overrides: list[str] = None) -> DictConfig:
 def show_hydra_help(method: str):
     """Show Hydra configuration help with all parameters"""
     from omegaconf import OmegaConf
-    
+
     # Load the default config to show structure
     cfg = load_hydra_config(method)
-    
+
     print("Hydra Configuration Help")
     print("=" * 50)
     print(f"Configuration for method: {method}")
@@ -74,23 +78,30 @@ def show_hydra_help(method: str):
     print(f"    uv run state tx train data=custom_data model=custom_model")
     print()
     print("Available config groups:")
-    
+
     # Show available config groups
     import os
     from pathlib import Path
-    
+
     config_dir = Path(__file__).parent / "configs"
     if config_dir.exists():
         for item in config_dir.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
+            if item.is_dir() and not item.name.startswith("."):
                 configs = [f.stem for f in item.glob("*.yaml")]
                 if configs:
                     print(f"  {item.name}: {', '.join(configs)}")
-    
+
     exit(0)
 
 
 def main():
+    if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
     args = get_args()
 
     match args.command:
@@ -106,12 +117,17 @@ def main():
         case "tx":
             match args.subcommand:
                 case "train":
-                    if hasattr(args, 'help') and args.help:
+                    if hasattr(args, "help") and args.help:
                         # Show Hydra configuration help
                         show_hydra_help("tx")
                     else:
                         # Load Hydra config with overrides for sets training
                         cfg = load_hydra_config("tx", args.hydra_overrides)
+                        logger.info(f"Using config: {cfg}")
+                        from omegaconf import OmegaConf
+
+                        reg = OmegaConf.select(cfg, "model.kwargs.transformer_backbone.regularization")
+                        logger.info(f"Regularization: {reg}")
                         run_tx_train(cfg)
                 case "predict":
                     # For now, predict uses argparse and not hydra
@@ -124,7 +140,13 @@ def main():
                     run_tx_preprocess_train(args.adata, args.output, args.num_hvgs)
                 case "preprocess_infer":
                     # Run inference preprocessing using argparse
-                    run_tx_preprocess_infer(args.adata, args.output, args.control_condition, args.pert_col, args.seed)
+                    run_tx_preprocess_infer(
+                        args.adata,
+                        args.output,
+                        args.control_condition,
+                        args.pert_col,
+                        args.seed,
+                    )
 
 
 if __name__ == "__main__":
