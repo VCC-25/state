@@ -96,11 +96,11 @@ def show_hydra_help(method: str):
 
 def main():
     if not logger.handlers:
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
 
     args = get_args()
 
@@ -126,7 +126,9 @@ def main():
                         logger.info(f"Using config: {cfg}")
                         from omegaconf import OmegaConf
 
-                        reg = OmegaConf.select(cfg, "model.kwargs.transformer_backbone.regularization")
+                        reg = OmegaConf.select(
+                            cfg, "model.kwargs.transformer_backbone.regularization"
+                        )
                         logger.info(f"Regularization: {reg}")
                         run_tx_train(cfg)
                 case "predict":
