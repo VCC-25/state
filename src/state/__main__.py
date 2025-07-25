@@ -124,30 +124,6 @@ def main():
                         # Load Hydra config with overrides for sets training
                         cfg = load_hydra_config("tx", args.hydra_overrides)
                         logger.info(f"Using config: {cfg}")
-                        from omegaconf import OmegaConf
-
-                        print(OmegaConf.to_yaml(cfg))
-
-                        reg = OmegaConf.select(
-                            cfg, "model.kwargs.transformer_backbone.regularization"
-                        )
-                        resid_pdrop = OmegaConf.select(
-                            cfg, "model.kwargs.transformer_backbone_kwargs.resid_pdrop"
-                        )
-                        attn_pdrop = OmegaConf.select(
-                            cfg, "model.kwargs.transformer_backbone_kwargs.attn_pdrop"
-                        )
-                        embd_pdrop = OmegaConf.select(
-                            cfg, "model.kwargs.transformer_backbone_kwargs.embd_pdrop"
-                        )
-                        lr = OmegaConf.select(cfg, "training.lr")
-                        batch_size = OmegaConf.select(cfg, "training.batch_size")
-                        logger.info(f"Regularization: {reg}")
-                        logger.info(f"Residual Dropout: {resid_pdrop}")
-                        logger.info(f"Attention Dropout: {attn_pdrop}")
-                        logger.info(f"Embedding Dropout: {embd_pdrop}")
-                        logger.info(f"Learning Rate: {lr}")
-                        logger.info(f"Batch Size: {batch_size}")
                         run_tx_train(cfg)
                 case "predict":
                     # For now, predict uses argparse and not hydra
