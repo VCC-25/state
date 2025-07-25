@@ -129,7 +129,23 @@ def main():
                         reg = OmegaConf.select(
                             cfg, "model.kwargs.transformer_backbone.regularization"
                         )
+                        resid_pdrop = OmegaConf.select(
+                            cfg, "model.kwargs.transformer_backbone.resid_pdrop"
+                        )
+                        attn_pdrop = OmegaConf.select(
+                            cfg, "model.kwargs.transformer_backbone.attn_pdrop"
+                        )
+                        embd_pdrop = OmegaConf.select(
+                            cfg, "model.kwargs.transformer_backbone.embd_pdrop"
+                        )
+                        lr = OmegaConf.select(cfg, "training.lr")
+                        batch_size = OmegaConf.select(cfg, "training.batch_size")
                         logger.info(f"Regularization: {reg}")
+                        logger.info(f"Residual Dropout: {resid_pdrop}")
+                        logger.info(f"Attention Dropout: {attn_pdrop}")
+                        logger.info(f"Embedding Dropout: {embd_pdrop}")
+                        logger.info(f"Learning Rate: {lr}")
+                        logger.info(f"Batch Size: {batch_size}")
                         run_tx_train(cfg)
                 case "predict":
                     # For now, predict uses argparse and not hydra
