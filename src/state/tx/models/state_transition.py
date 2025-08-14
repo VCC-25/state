@@ -5,6 +5,7 @@ import anndata as ad
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from geomloss import SamplesLoss
 from typing import Tuple
@@ -16,6 +17,85 @@ from .utils import build_mlp, get_activation_class, get_transformer_backbone
 
 
 logger = logging.getLogger(__name__)
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+
+class LambdaRankMeanTargetLoss(nn.Module):
+    def __init__(self, k=None, eps=1e-10):
+        """
+        Vectorized top-k nDCG loss for gene expression ranking.
+        
+        Args:
+            k: consider only top-k predicted genes per replicate. If None, use all genes.
+            eps: small constant to avoid divide-by-zero.
+        """
+        super().__init__()
+        self.k = k
+        self.eps = eps
+
+    def forward(self, preds, targets):
+        """
+        Args:
+            preds:   [B, S, G] predicted expression
+            targets: [B, S, G] true expression
+        Returns:
+            Scalar nDCG loss in [0,1]
+        """
+        B, S, G = preds.shape
+
+        # Step 1: mean target per perturbation
+        mean_targets = targets.mean(dim=1)  # [B, G]
+
+        # Step 2: optional top-k filtering
+        if self.k is not None and self.k < G:
+            topk_idx = torch.topk(preds, self.k, dim=2).indices  # [B, S, k]
+            preds = torch.gather(preds, 2, topk_idx)            # [B, S, k]
+            # Gather corresponding ground-truth values
+            y = torch.gather(mean_targets.unsqueeze(1).expand(-1, S, -1), 2, topk_idx)
+        else:
+            y = mean_targets.unsqueeze(1).expand(-1, S, -1)     # [B, S, G]
+
+        # Step 3: compute gains (clip negative values to zero)
+        gains = 2 ** y - 1  # [B, S, k] or [B, S, G]
+
+        # Step 4: compute discounts for positions 1..G_eff
+        G_eff = preds.shape[2]
+        discounts = 1.0 / torch.log2(torch.arange(2, G_eff + 2, device=preds.device).float())
+        discounts = discounts.view(1, 1, -1)  # broadcast to [1,1,G_eff]
+
+        # Step 5: DCG for predicted order
+        _, rank_idx = torch.sort(preds, dim=2, descending=True)
+        sorted_gains = torch.gather(gains, 2, rank_idx)
+        dcg = (sorted_gains * discounts).sum(dim=2)  # [B, S]
+
+        # Step 6: IDCG from ideal (ground-truth sorted) order
+        ideal_gains, _ = torch.sort(gains, dim=2, descending=True)
+        idcg = (ideal_gains * discounts).sum(dim=2)  # [B, S]
+        idcg = idcg + self.eps  # avoid divide by zero
+
+        # Step 7: nDCG and loss
+        ndcg = dcg / idcg         # [B, S], guaranteed in [0,1]
+        loss = 1.0 - ndcg.mean()  # scalar, non-negative
+        
+        # Ensure loss is non-negative
+        assert loss >= 0, f"Loss must be non-negative, got {loss}"
+
+        return loss
+
+
 
 class CombinedLoss(nn.Module):
     """
@@ -204,6 +284,11 @@ class StateTransitionPerturbationModel(PerturbationModel):
         if kwargs.get("confidence_token", False):
             self.confidence_token = ConfidenceToken(hidden_dim=self.hidden_dim, dropout=self.dropout)
             self.confidence_loss_fn = nn.MSELoss()
+            
+        self.ranking_loss = None
+        self.top_k = kwargs.get("top_k", 200)
+        if kwargs.get("ranking_loss", False):
+            self.ranking_loss = LambdaRankMeanTargetLoss(k=self.top_k)
 
         self.freeze_pert_backbone = kwargs.get("freeze_pert_backbone", False)
         if self.freeze_pert_backbone:
@@ -477,6 +562,11 @@ class StateTransitionPerturbationModel(PerturbationModel):
             self.log("decoder_loss", decoder_loss)
 
             total_loss = total_loss + self.decoder_loss_weight * decoder_loss
+            
+        if self.ranking_loss is not None:
+            ranking_loss = self.ranking_loss(pred, target)
+            self.log("train/ranking_loss", ranking_loss)
+            total_loss = total_loss + ranking_loss
 
         if confidence_pred is not None:
             # Detach main loss to prevent gradients flowing through it
@@ -527,8 +617,14 @@ class StateTransitionPerturbationModel(PerturbationModel):
         target = target.reshape(-1, self.cell_sentence_len, self.output_dim)
 
         loss = self.loss_fn(pred, target).mean()
-        self.log("val_loss", loss)
+        self.log("val/recon_loss", loss)
         
+        if self.ranking_loss is not None:
+            ranking_loss = self.ranking_loss(pred, target)
+            self.log("val/ranking_loss", ranking_loss)
+            loss += ranking_loss
+            self.log("val_loss", loss)
+
         # Log individual loss components if using combined loss
         if hasattr(self.loss_fn, 'sinkhorn_loss') and hasattr(self.loss_fn, 'energy_loss'):
             sinkhorn_component = self.loss_fn.sinkhorn_loss(pred, target).mean()

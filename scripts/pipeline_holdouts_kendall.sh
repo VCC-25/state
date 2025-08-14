@@ -6,10 +6,13 @@
 MODEL_DIR="competition"
 
 # experiment name
-DIR_NAME="kendall_test"
+DIR_NAME="kendall_LambdaRank"
 
 # toml config path
 TOML_CONFIG="examples/fewshot.toml"
+
+# prep TOML
+PREP_TOML_CONFIG="examples/fewshot_prep.toml"
 
 # Competition support set
 COMPETITION_SUPPORT_SET="/raid/kreid/v_cell/competition_support_set"
@@ -29,7 +32,7 @@ OUT_DIR=cell-eval-outdir-2
 # parallelization
 THREADS=8
 NUM_WORKERS=8
-BATCH_SIZE=100
+BATCH_SIZE=64
 
 # Exit on error
 set -e
@@ -46,18 +49,19 @@ uv run state tx train \
   data.kwargs.cell_type_key=cell_type \
   data.kwargs.control_pert=non-targeting \
   data.kwargs.perturbation_features_file=${PERT_FEATURES} \
-  training.max_steps=100 \
-  training.ckpt_every_n_steps=500 \
-  training.val_freq=250 \
+  training.max_steps=10000 \
+  training.ckpt_every_n_steps=2500 \
+  training.val_freq=50 \
   model=state_sm \
   model.kwargs.nb_decoder=true \
+  +model.kwargs.ranking_loss=true \
   wandb.tags=[${DIR_NAME}] \
   output_dir=${MODEL_DIR} \
   name=${DIR_NAME} \
   use_wandb=false
 
-python scripts/prepare_holdout_ground_truth.py \
-  --toml_config ${TOML_CONFIG} \
+uv run scripts/prepare_holdout_ground_truth.py \
+  --toml_config ${PREP_TOML_CONFIG} \
   --split test \
   --output_dir ${OUT_DIR} \
   --output_h5ad holdout_ground_truth_test.h5ad \
@@ -78,7 +82,7 @@ echo "#### Running prediction ####"
 
 # gets metrics.csv along with real and predicted adata from test holdouts
 uv run state tx predict \
-    --checkpoint "final.ckpt" \
+    --checkpoint "${CKPT}" \
     --output_dir "${MODEL_DIR}/${DIR_NAME}/" \
     --profile full
 
