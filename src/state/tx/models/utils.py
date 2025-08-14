@@ -69,7 +69,7 @@ def get_activation_class(name: str) -> nn.Module:
         raise ValueError(f"Unsupported activation function: {name}")
 
 
-def get_loss_fn(loss: Union[str, nn.Module]) -> nn.Module:
+def get_loss_fn(loss: Union[str, nn.Module, None]) -> nn.Module:
     """
     Given a string loss function name, return the corresponding nn.Module class.
 
@@ -78,6 +78,9 @@ def get_loss_fn(loss: Union[str, nn.Module]) -> nn.Module:
     - L1Loss
     - SmoothL1Loss
     """
+    if loss is None:
+        return nn.MSELoss()  # Default to MSE if None
+    
     if isinstance(loss, nn.Module):
         return loss
 

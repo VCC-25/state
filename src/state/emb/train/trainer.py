@@ -8,27 +8,33 @@ from datetime import timedelta
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.strategies import DDPStrategy
 
 from ..nn.model import StateEmbeddingModel
 from ..data import H5adSentenceDataset, VCIDatasetSentenceCollator
-from ..train.callbacks import LogLR, ProfilerCallback, ResumeCallback, EMACallback, PerfProfilerCallback
+from .callbacks import LogLR, ProfilerCallback, ResumeCallback, EMACallback, PerfProfilerCallback
 from ..utils import get_latest_checkpoint, get_embedding_cfg, get_dataset_cfg
 
 
 def get_embeddings(cfg):
     # Load in ESM2 embeddings and special tokens
+    # And graph embeddings will come in later(?)
     all_pe = torch.load(get_embedding_cfg(cfg).all_embeddings, weights_only=False)
     if isinstance(all_pe, dict):
         all_pe = torch.vstack(list(all_pe.values()))
 
-    all_pe = all_pe.cuda()
+    # Use MPS if available, otherwise CPU
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    all_pe = all_pe.to(device)
     return all_pe
 
 
 def main(cfg):
     print(f"Starting training with Embedding {cfg.embeddings.current} and dataset {cfg.dataset.current}")
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    
+    # Set device to MPS if available, otherwise CPU
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
     os.environ["NCCL_LAUNCH_TIMEOUT"] = str(cfg.experiment.ddp_timeout)
     os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
     TOTAL_N_CELL = cfg.dataset.num_cells
@@ -88,15 +94,9 @@ def main(cfg):
         collater=val_dataset_sentence_collator,
         cfg=cfg,
     )
-    # Ensure model always uses the current config, even after checkpoint loading
-    model.update_config(cfg)
-    # Also update datasets and collaters with current config
-    train_dataset.cfg = cfg
-    val_dataset.cfg = cfg
-    train_dataset_sentence_collator.cfg = cfg
-    val_dataset_sentence_collator.cfg = cfg
-    model.collater = val_dataset_sentence_collator
-    model = model.cuda()
+    
+    # Use device-agnostic approach
+    model = model.to(device)
     all_pe = get_embeddings(cfg)
     all_pe.requires_grad = False
     model.pe_embedding = nn.Embedding.from_pretrained(all_pe)
@@ -142,21 +142,19 @@ def main(cfg):
         max_steps = cfg.experiment.profile.max_steps
 
     val_interval = int(cfg.experiment.val_check_interval * cfg.experiment.num_gpus_per_node * cfg.experiment.num_nodes)
+    
+    # Use device-agnostic trainer configuration
     trainer = L.Trainer(
         max_epochs=cfg.experiment.num_epochs,
         max_steps=max_steps,
         callbacks=callbacks,
-        devices=cfg.experiment.num_gpus_per_node,
-        num_nodes=cfg.experiment.num_nodes,
+        devices=1,  # Single device for M1
+        num_nodes=1,
         # Accumulation
         gradient_clip_val=cfg.optimizer.max_grad_norm,
         accumulate_grad_batches=cfg.optimizer.gradient_accumulation_steps,
-        precision="bf16-mixed",
-        strategy=DDPStrategy(
-            process_group_backend="nccl",
-            find_unused_parameters=False,
-            timeout=timedelta(seconds=cfg.experiment.get("ddp_timeout", 3600)),
-        ),
+        precision="32-true",  # Use 32-bit precision for MPS compatibility
+        strategy="auto",  # Auto-select strategy
         val_check_interval=val_interval,
         # Logging
         logger=exp_logger,
@@ -171,4 +169,4 @@ def main(cfg):
 
     trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader, ckpt_path=chk)
 
-    trainer.save_checkpoint(os.path.join(cfg.experiment.checkpoint.path, f"{run_name}_final.pt"))
+    trainer.save_checkpoint(os.path.join(cfg.experiment.checkpoint.path, f"{run_name}_final.pt")) 

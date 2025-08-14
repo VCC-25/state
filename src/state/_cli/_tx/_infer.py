@@ -41,6 +41,8 @@ def run_tx_infer(args):
     from tqdm import tqdm
 
     from ...tx.models.state_transition import StateTransitionPerturbationModel
+    from ...tx.models.graph import GraphPerturbationModel
+    
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -72,11 +74,23 @@ def run_tx_infer(args):
     pert_dim = var_dims["pert_dim"]
 
     # Load model
+    # logger.info(f"Loading model from checkpoint: {checkpoint_path}")
+    # model = GraphPerturbationModel.load_from_checkpoint(checkpoint_path)
+    # model.eval()
+    # cell_sentence_len = model.cell_sentence_len
+    # #device = next(model.parameters()).device
+    # device = "cpu"
+    # Load model
     logger.info(f"Loading model from checkpoint: {checkpoint_path}")
-    model = StateTransitionPerturbationModel.load_from_checkpoint(checkpoint_path)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    model = GraphPerturbationModel.load_from_checkpoint(checkpoint_path, map_location=device)
     model.eval()
+
+    # Force entire model to CPU to avoid MPS device issues
+    # device = "cpu"
+    model = model.to(device)
+
     cell_sentence_len = model.cell_sentence_len
-    device = next(model.parameters()).device
 
     # Load AnnData
     logger.info(f"Loading AnnData from: {args.adata}")

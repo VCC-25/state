@@ -1,0 +1,168 @@
+# Configuration for State Transition using State Embedding model
+# This combines state transition training with embeddings from state embedding model
+
+# Import the base configuration
+defaults:
+  - state-defaults
+  - _self_
+
+# Experiment configuration
+experiment:
+  name: "ST_training_SE_graphESM"
+  local: "local"
+  compiled: false
+  deaware: false
+  profile:
+    enable_profiler: false
+    profile_steps: [10, 100]
+    max_steps: 110
+  num_epochs: 1
+  num_nodes: 1
+  num_gpus_per_node: 1
+  port: 12400
+  val_check_interval: 1
+  limit_val_batches: 1
+  ddp_timeout: 3600
+  checkpoint:
+    path: "./output/state_transition_with_embeddings"
+    save_top_k: 4
+    monitor: trainer/train_loss
+    every_n_train_steps: 1000
+
+# Model configuration - State Transition with Embedding Integration
+model:
+  name: "state_sm"
+  checkpoint: null
+  device: "mps"  # Use MPS for Mac
+  
+  kwargs:
+    cell_set_len: 128
+    blur: 0.05
+    hidden_dim: 672
+    loss: energy
+    confidence_head: False
+    n_encoder_layers: 4
+    n_decoder_layers: 4
+    predict_residual: True
+    softplus: True
+    freeze_pert: False
+    transformer_decoder: False
+    finetune_vci_decoder: False
+    residual_decoder: False
+    batch_encoder: False
+    nb_decoder: False
+    mask_attn: False
+    use_effect_gating_token: False
+    use_basal_projection: False
+    distributional_loss: energy
+    gene_decoder_bool: False
+    init_from: null
+    transformer_backbone_key: llama
+    transformer_backbone_kwargs:
+        max_position_embeddings: ${model.kwargs.cell_set_len}
+        hidden_size: ${model.kwargs.hidden_dim}
+        intermediate_size: 2688
+        num_hidden_layers: 4
+        num_attention_heads: 8
+        num_key_value_heads: 8
+        head_dim: 84
+        use_cache: false
+        attention_dropout: 0.0
+        hidden_dropout: 0.0
+        layer_norm_eps: 1e-6
+        pad_token_id: 0
+        bos_token_id: 1
+        eos_token_id: 2
+        tie_word_embeddings: false
+        rotary_dim: 0
+        use_rotary_embeddings: false
+
+# Data configuration
+data:
+  name: "PerturbationDataModule"
+  kwargs:
+    toml_config_path: "examples/competition_se.toml"
+    embed_key: "X_emb"
+    output_space: "gene"
+    pert_rep: "onehot"
+    basal_rep: "sample"
+    num_workers: 4
+    pin_memory: true
+    n_basal_samples: 1
+    basal_mapping_strategy: "random"
+    should_yield_control_cells: true
+    batch_col: "batch_var"
+    pert_col: "target_gene"
+    cell_type_key: "cell_type"
+    control_pert: "non-targeting"
+    map_controls: true
+    perturbation_features_file: null
+    store_raw_basal: false
+    int_counts: false
+    barcode: true
+    # State embedding integration
+    use_state_embeddings: true
+    state_embedding_model_path: "./output/se_training_fresh/checkpoints/best.ckpt"
+    state_embedding_dim: 512
+
+# Training configuration
+training:
+  max_steps: 40
+  train_seed: 42
+  val_freq: 5
+  test_freq: 5
+  gradient_clip_val: 10
+  lr: 1e-4
+  wd: 4e-7
+  step_size_lr: 25
+  do_clip_grad: false
+  batch_size: 8
+  devices: 1
+  strategy: "auto"
+
+# Validation configuration
+validations:
+  diff_exp:
+    enable: true
+    eval_interval_multiple: 5
+    dataset: "./data/competition_val_template.h5ad"
+    dataset_name: "competition_val"
+    obs_pert_col: "target_gene"
+    obs_filter_label: "non-targeting"
+    top_k_rank: 50
+    method: "wilcoxon"
+  
+  perturbation:
+    enable: true
+    eval_interval_multiple: 10
+    dataset: "./data/competition_val_template.h5ad"
+    dataset_name: "competition_val"
+    pert_col: "target_gene"
+    ctrl_label: "non-targeting"
+
+# Optimizer configuration
+optimizer:
+  start: 0.1
+  end: 1.0
+  weight_decay: 0.01
+  max_lr: 1e-4
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+
+# Wandb configuration
+wandb:
+  enable: false
+  project: "state_transition_with_embeddings"
+  entity: "mukulsherekar"
+  local_wandb_dir: "./wandb_logs"
+  tags: ["state_transition", "embeddings"]
+
+# Embeddings configuration
+embeddings:
+  current: esm2-cellxgene
+  esm2-cellxgene:
+    all_embeddings: "./embeddings/ESM2_pert_features.pt"
+    ds_emb_mapping: "./embeddings/ds_emb_mapping_5120.pt"
+    valid_genes_masks: "./embeddings/valid_genes_masks.pt"
+    size: 5120
+    num: 19790 

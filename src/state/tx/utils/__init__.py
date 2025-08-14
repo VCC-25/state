@@ -7,6 +7,8 @@ import csv
 import os
 from lightning.pytorch.callbacks import ModelCheckpoint
 from os.path import join
+from pathlib import Path
+import torch
 
 
 class RobustCSVLogger(BaseCSVLogger):
@@ -170,6 +172,16 @@ def get_lightning_module(model_type: str, data_config: dict, model_config: dict,
     module_config["gene_names"] = var_dims["gene_names"]
     module_config["batch_size"] = training_config["batch_size"]
     module_config["control_pert"] = data_config.get("control_pert", "non-targeting")
+    
+    # Get device from config
+    device = model_config.get("device", "auto")
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
 
     if data_config["output_space"] == "gene":
         gene_dim = var_dims["hvg_dim"]
@@ -260,6 +272,48 @@ def get_lightning_module(model_type: str, data_config: dict, model_config: dict,
             batch_dim=var_dims["batch_dim"],
             **module_config,
         )
+    elif model_type.lower() == "state_graph":
+        from ..models.graph import GraphPerturbationModel
+        
+        # Create graph builder for state_graph model
+        from ...tx.graphs.graph_construction import StateGraphBuilder
+        
+        # Get perturbation mapping from data module
+        pert2id = module_config.get("pert2id", {})
+        graph_cache_dir = module_config.get("graph_cache_dir", "graphs")
+        
+        # Create graph builder
+        graph_builder = StateGraphBuilder(
+            pert2id=pert2id,
+            cache_dir=graph_cache_dir
+        )
+        
+        # Get graph configuration
+        graph_config = module_config.get("graph_config", {})
+        gnn_backend = module_config.get("gnn_backend", "basic_gnn")
+        
+        # Validate GNN backend
+        valid_backends = ["basic_gnn", "exphormer", "multi_graph"]
+        if gnn_backend not in valid_backends:
+            raise ValueError(f"Invalid gnn_backend: {gnn_backend}. Must be one of {valid_backends}")
+        
+        # Clean module config to avoid duplicate parameters
+        duplicate_params = ["graph_config", "input_dim", "gene_dim", "hvg_dim", "output_dim", "pert_dim", "batch_dim", "gnn_backend", "loss_fn", "graph_builder"]
+        module_config_clean = {k: v for k, v in module_config.items() if k not in duplicate_params}
+        
+        return GraphPerturbationModel(
+            input_dim=var_dims["input_dim"],
+            gene_dim=gene_dim,
+            hvg_dim=var_dims["hvg_dim"],
+            output_dim=var_dims["output_dim"],
+            pert_dim=var_dims["pert_dim"],
+            batch_dim=var_dims["batch_dim"],
+            graph_builder=graph_builder,
+            graph_config=graph_config,
+            gnn_backend=gnn_backend,
+            device=device,
+            **module_config_clean,
+        )
     elif model_type.lower() == "cpa":
         from ...tx.models.cpa import CPAPerturbationModel
 
@@ -348,5 +402,3 @@ def get_lightning_module(model_type: str, data_config: dict, model_config: dict,
                 model.model.load_state_dict(model_dict)
 
         return model
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")

@@ -26,7 +26,7 @@ def run_tx_train(cfg: DictConfig):
     from lightning.pytorch.loggers import WandbLogger
     from lightning.pytorch.plugins.precision import MixedPrecision
 
-    from ...tx.callbacks import BatchSpeedMonitorCallback, ScheduledFinetuningCallback
+    from ...tx.callbacks import BatchSpeedMonitorCallback
     from ...tx.utils import get_checkpoint_callbacks, get_lightning_module, get_loggers
 
     logger = logging.getLogger(__name__)
@@ -67,6 +67,9 @@ def run_tx_train(cfg: DictConfig):
                 cfg["training"]["batch_size"] = 1
             else:
                 sentence_len = 1
+        elif cfg["model"]["name"].lower() in ["multigraph", "multigraph_perturbation", "multigraphperturbationmodel"]:
+            # Multigraph models don't use transformer backbone
+            sentence_len = 1
         else:
             try:
                 sentence_len = cfg["model"]["kwargs"]["transformer_backbone_kwargs"]["n_positions"]
@@ -120,6 +123,7 @@ def run_tx_train(cfg: DictConfig):
     print("batch size:", dl.batch_size)
 
     var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
+    
     if cfg["data"]["kwargs"]["output_space"] == "gene":
         gene_dim = var_dims.get("hvg_dim", 2000)  # fallback if key missing
     else:
@@ -156,6 +160,154 @@ def run_tx_train(cfg: DictConfig):
         cfg["model"]["kwargs"]["n_cell_types"] = len(data_module.celltype_onehot_map)
         cfg["model"]["kwargs"]["n_perts"] = len(data_module.pert_onehot_map)
         cfg["model"]["kwargs"]["n_batches"] = len(data_module.batch_onehot_map)
+
+    # Setup graph builder for multigraph models
+    if cfg["model"]["name"].lower() in ["multigraph", "multigraph_perturbation"]:
+        from ...tx.graphs.graph_construction import StateGraphBuilder
+        
+        # Create perturbation to index mapping
+        unique_perts = set()
+        for dataset in data_module.datasets:
+            # Collect all unique perturbations
+            unique_perts.update(dataset.pert_categories)
+        
+        pert2id = {pert: idx for idx, pert in enumerate(sorted(unique_perts))}
+        
+        # Initialize graph builder
+        graph_cache_dir = cfg["model"]["kwargs"].get("graph_cache_dir", "./graphs")
+        graph_builder = StateGraphBuilder(
+            pert2id=pert2id,
+            cache_dir=graph_cache_dir
+        )
+        
+        # Update model kwargs with graph components
+        cfg["model"]["kwargs"]["pert2id"] = pert2id
+        cfg["model"]["kwargs"]["graph_builder"] = graph_builder
+        
+        # Save graph configuration and perturbation mapping
+        graph_config_path = join(run_output_dir, "graph_config.pkl")
+        pert2id_path = join(run_output_dir, "pert2id.pkl")
+        
+        with open(graph_config_path, "wb") as f:
+            pickle.dump(cfg["model"]["kwargs"]["graph_config"], f)
+        with open(pert2id_path, "wb") as f:
+            pickle.dump(pert2id, f)
+        
+        logger.info(f"Initialized graph builder with {len(pert2id)} perturbations")
+        logger.info(f"Graph cache directory: {graph_cache_dir}")
+
+    # Setup graph builder for state_graph models
+    elif cfg["model"]["name"].lower() == "state_graph":
+        from ...tx.graphs.graph_construction import StateGraphBuilder
+        import anndata as ad
+        import os
+        
+        # Create perturbation to index mapping from training data
+        # Get the training data path from the TOML configuration
+        toml_config_path = cfg["data"]["kwargs"].get("toml_config_path")
+        if toml_config_path:
+            try:
+                # Try built-in tomllib (Python 3.11+)
+                import tomllib
+            except ImportError:
+                # Fallback to tomli
+                import tomli as tomllib
+            
+            with open(toml_config_path, "rb") as f:
+                toml_config = tomllib.load(f)
+            
+            # Get all training datasets from the TOML config
+            training_datasets = []
+            for dataset_name, dataset_path in toml_config.get("datasets", {}).items():
+                if dataset_name in toml_config.get("training", {}):
+                    training_datasets.append(dataset_path)
+            
+            if training_datasets:
+                # Collect perturbations from all training datasets
+                unique_perts = set()
+                
+                for dataset_path in training_datasets:
+                    # Handle glob patterns by expanding them
+                    import glob
+                    if '{' in dataset_path and '}' in dataset_path:
+                        # This is a brace expansion pattern, handle it manually
+                        # Extract the pattern like "data/{file1,file2,file3}.h5"
+                        import re
+                        pattern = dataset_path
+                        # Find the brace part
+                        brace_match = re.search(r'\{([^}]+)\}', pattern)
+                        if brace_match:
+                            brace_content = brace_match.group(1)
+                            prefix = pattern[:brace_match.start()]
+                            suffix = pattern[brace_match.end():]
+                            # Split the brace content and create individual paths
+                            expanded_paths = []
+                            for item in brace_content.split(','):
+                                # Handle case where item already has .h5 extension
+                                if item.endswith('.h5'):
+                                    expanded_paths.append(prefix + item)
+                                else:
+                                    expanded_paths.append(prefix + item + suffix)
+                        else:
+                            expanded_paths = [dataset_path]
+                    else:
+                        # This is a regular path
+                        expanded_paths = [dataset_path]
+                    
+                    logger.info(f"Processing dataset path: {dataset_path}")
+                    logger.info(f"Expanded to {len(expanded_paths)} files: {expanded_paths}")
+                    
+                    for file_path in expanded_paths:
+                        if os.path.exists(file_path):
+                            try:
+                                adata = ad.read_h5ad(file_path)
+                                file_perts = set(adata.obs['target_gene'].unique())
+                                unique_perts.update(file_perts)
+                                logger.info(f"✅ SUCCESS: Added {len(file_perts)} perturbations from {file_path}")
+                                logger.info(f"   Sample perturbations: {list(file_perts)[:5]}")
+                            except Exception as e:
+                                logger.warning(f"❌ FAILED: Could not read {file_path}: {e}")
+                        else:
+                            logger.warning(f"❌ FILE NOT FOUND: {file_path}")
+                
+                if unique_perts:
+                    logger.info(f"🎯 FINAL RESULT: Total unique perturbations from all training datasets: {len(unique_perts)}")
+                    logger.info(f"   Sample final perturbations: {list(unique_perts)[:10]}")
+                else:
+                    # Fallback to competition dataset
+                    logger.warning("No perturbations found in training datasets, using fallback")
+                    adata = ad.read_h5ad("data/competition_train.h5")
+                    unique_perts = set(adata.obs['target_gene'].unique())
+        else:
+            # Fallback to competition dataset
+            logger.warning(f"No TOML config path provided, using fallback")
+            adata = ad.read_h5ad("data/competition_train.h5")
+            unique_perts = set(adata.obs['target_gene'].unique())
+        
+        pert2id = {pert: idx for idx, pert in enumerate(sorted(unique_perts))}
+        
+        # Initialize graph builder
+        graph_cache_dir = cfg["model"]["kwargs"].get("graph_cache_dir", "./graphs")
+        graph_builder = StateGraphBuilder(
+            pert2id=pert2id,
+            cache_dir=graph_cache_dir
+        )
+        
+        # Update model kwargs with graph components
+        cfg["model"]["kwargs"]["pert2id"] = pert2id
+        cfg["model"]["kwargs"]["graph_builder"] = graph_builder
+        
+        # Save graph configuration and perturbation mapping
+        graph_config_path = join(run_output_dir, "graph_config.pkl")
+        pert2id_path = join(run_output_dir, "pert2id.pkl")
+        
+        with open(graph_config_path, "wb") as f:
+            pickle.dump(cfg["model"]["kwargs"]["graph_config"], f)
+        with open(pert2id_path, "wb") as f:
+            pickle.dump(pert2id, f)
+        
+        logger.info(f"Initialized graph builder with {len(pert2id)} perturbations")
+        logger.info(f"Graph cache directory: {graph_cache_dir}")
 
     # Create model
     model = get_lightning_module(
@@ -248,7 +400,7 @@ def run_tx_train(cfg: DictConfig):
     )
 
     # If it's SimpleSum, override to do exactly 1 epoch, ignoring `max_steps`.
-    if cfg["model"]["name"].lower() == "celltypemean" or cfg["model"]["name"].lower() == "globalsimplesum" or cfg["model"]["name"].lower() == "perturb_mean" or cfg["model"]["name"].lower() == "context_mean":
+    if cfg["model"]["name"].lower() == "celltypemean" or cfg["model"]["name"].lower() == "globalsimplesum":
         trainer_kwargs["max_epochs"] = 1  # do exactly one epoch
         # delete max_steps to avoid conflicts
         del trainer_kwargs["max_steps"]
@@ -264,6 +416,26 @@ def run_tx_train(cfg: DictConfig):
         checkpoint_path = None
     else:
         logging.info(f"!! Resuming training from {checkpoint_path} !!")
+
+    print(f"Model device: {next(model.parameters()).device}")
+    
+    if torch.mps.is_available():
+        print("METAL (MPS) is available")
+        # Note: torch.mps.memory_allocated() and memory_reserved() are not available in all PyTorch versions
+        try:
+            if hasattr(torch.mps, 'memory_allocated'):
+                print(f"METAL memory allocated: {torch.mps.memory_allocated() / 1024**3:.2f} GB")
+                print(f"METAL memory reserved: {torch.mps.memory_reserved() / 1024**3:.2f} GB")
+            else:
+                print("METAL memory info not available in this PyTorch version")
+        except AttributeError:
+            print("METAL memory info not available in this PyTorch version")
+    elif torch.cuda.is_available():
+        print(f"CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        print(f"CUDA memory reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+    else:
+        print("Running on CPU")
+    
     
     logger.info("Starting trainer fit.")
 
@@ -273,12 +445,7 @@ def run_tx_train(cfg: DictConfig):
     if checkpoint_path is None and manual_init is not None:
         print(f"Loading manual checkpoint from {manual_init}")
         checkpoint_path = manual_init
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_state = model.state_dict()
         checkpoint_state = checkpoint["state_dict"]

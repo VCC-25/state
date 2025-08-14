@@ -3,7 +3,7 @@ kwargs:
   toml_config_path: null
   embed_key: null
   output_space: all
-  pert_rep: onehot
+  pert_rep: graph  # onehot: one-hot encoding of the perturbation, graph: graph embedding of the perturbation
   basal_rep: sample
   num_workers: 12
   pin_memory: true
@@ -19,5 +19,6 @@ kwargs:
   store_raw_basal: false
   int_counts: false
   barcode: true
+
 output_dir: null
 debug: true

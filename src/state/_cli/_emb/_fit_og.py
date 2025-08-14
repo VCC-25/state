@@ -19,7 +19,7 @@ def run_emb_fit(cfg, args):
 
     from omegaconf import OmegaConf
 
-    from ...emb.train import main as trainer_main
+    from ...emb.train.trainer import main as trainer_main
 
     log = logging.getLogger(__name__)
 
@@ -51,4 +51,4 @@ def run_emb_fit(cfg, args):
     log.info(OmegaConf.to_yaml(cfg))
 
     # Execute the main training logic
-    trainer_main(cfg) 
+    trainer_main(cfg)

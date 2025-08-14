@@ -1,11 +1,8 @@
 import time
 import logging
-import os
-import shutil
 
 import torch
 import lightning as L
-from omegaconf import OmegaConf
 
 
 class LogLR(L.Callback):

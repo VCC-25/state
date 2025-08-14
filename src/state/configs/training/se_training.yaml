@@ -1,0 +1,178 @@
+# Config file for the State Embedding training 
+# This has configs for graph embeddings.
+
+# Import the base configuration
+defaults:
+  - state-defaults
+  - _self_
+
+# Experiment configuration
+experiment:
+  name: "se_graph_esm"
+  local: "local"
+  compiled: false
+  deaware: false
+  profile:
+    enable_profiler: false
+    profile_steps: [10, 100] # change
+    max_steps: 110 # Change
+  num_epochs: 1  # Change
+  num_nodes: 1 # Change if needed
+  num_gpus_per_node: 1 # Change if needed
+  port: 12400
+  val_check_interval: 5  # Change
+  limit_val_batches: 5    # Change
+  ddp_timeout: 3600
+  checkpoint:
+    path: "./output/se_training_fresh" # Change
+    save_top_k: 1  # Change
+    monitor: trainer/train_loss
+    every_n_train_steps: 100  # Change
+
+# Model configuration 
+model:
+  # Disable graph embeddings for now to fix dimension mismatch
+  use_graph_embeddings: true
+  
+  graph_dim: 16
+  graph_loss_weight: 0.1
+
+# Graph configuration
+  graph_config:
+    # experimental_graph:
+    #   type: "experimental"
+    #   args:
+    #     mode: "neighborhood"
+    #     similarity_mode: "adjacency"
+    
+    string_graph:
+      type: "string"
+      args:
+        mode: "edge_weighted"
+        similarity_mode: "neighborhood"
+    
+    go_graph:
+      type: "go"
+      args:
+        mode: "graph_conv"
+        similarity_mode: "shortest_path"
+    
+    reactome_graph:
+      type: "reactome"
+      args:
+        mode: "random_walk"
+        walk_length: 3
+        num_walks: 10
+        similarity_mode: "adjacency"
+
+  # Graph builder configuration
+  graph_builder:
+    cache_dir: "./graphs"
+    graph_types: ["string", "go", "reactome"]
+    similarity_modes: ["adjacency", "neighborhood", "shortest_path"]
+    embedding_dim: 16
+    use_weighted_edges: true
+    normalize_embeddings: true
+
+  
+  # Model parameters - 
+  name: "vci"
+  batch_size: 8  # Reduced from 128 to save memory
+  token_dim: 5120
+  emsize: 512  
+  nhead: 2      # Reduced from 16
+  d_hid: 128    # Reduced from 1024
+  nlayers: 2    # Reduced from 8
+  output_dim: 512  
+  dropout: 0.1
+  use_flash_attention: false  # Disabled to save memory
+  warmup_steps: 0
+  compiled: false
+  max_lr: 4e-4
+  rda: true
+  counts: true
+  dataset_correction: true
+  ema: false
+  ema_decay: 0.999
+  ema_update_interval: 1000
+  sample_rda: false
+  batch_tabular_loss: false
+  num_downsample: 1
+  variable_masking: true
+
+# Dataset configuration 
+dataset:
+  name: "vci"
+  seed: 42
+  num_train_workers: 1  # Reduced from 2
+  num_val_workers: 1    # Already 1
+  num_cells: 1000  # change
+  
+  # Dataset parameters - FIXED to match original dimensions
+  P: 256   # Reduced from 512
+  N: 256   # Reduced from 512
+  S: 256   # Reduced from 512
+  pad_length: 1024  # Reduced from 2048
+  cls_token_idx: 0
+  
+  # Use competition datasets
+  current: competition_train
+  competition_train:
+    data_dir: "./data"
+    ds_type: h5ad
+    filter: false
+    train: "./examples/train_datasets_se.csv"
+    val: "./examples/val_datasets_se.csv"
+    num_datasets: 1
+
+# Loss configuration
+loss:
+  name: "mmd"
+
+# Task configuration
+task:
+  mask: 0.15 # change
+
+# Validation configuration 
+validations:
+  diff_exp:
+    enable: true  
+    eval_interval_multiple: 1
+    dataset: "./data/competition_val_template.h5ad"
+    dataset_name: "competition_val"
+    obs_pert_col: "target_gene"
+    obs_filter_label: "non-targeting"
+    top_k_rank: 1
+    method: "wilcoxon"
+  
+  perturbation:
+    enable: true  
+    eval_interval_multiple: 2
+    dataset: "./data/competition_val_template.h5ad"
+    dataset_name: "competition_val"
+    pert_col: "target_gene"
+    ctrl_label: "non-targeting"
+
+# Optimizer configuration
+optimizer:
+  start: 0.1
+  end: 1.0
+  weight_decay: 0.01
+  max_lr: 4e-4
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+
+# Wandb configuration
+wandb:
+  enable: true
+  project: "se_competition_training"
+
+# Embeddings configuration 
+embeddings:
+  current: esm2-cellxgene
+  esm2-cellxgene:
+    all_embeddings: "./embeddings/ESM2_pert_features.pt"
+    ds_emb_mapping: "./embeddings/ds_emb_mapping_5120.pt"
+    valid_genes_masks: "./embeddings/valid_genes_masks.pt"
+    size: 5120
+    num: 19790 
