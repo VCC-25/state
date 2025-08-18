@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchsort import soft_rank
 
 from geomloss import SamplesLoss
 from typing import Tuple
@@ -18,6 +19,16 @@ from .utils import build_mlp, get_activation_class, get_transformer_backbone
 
 logger = logging.getLogger(__name__)
 
+def check_grad_ready(x, name="variable"):
+    assert x.requires_grad, f"{name} must have requires_grad=True to compute gradients."
+    assert x.grad_fn is not None, f"{name} must have a grad_fn to compute gradients."
+    
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from statsmodels.stats.multitest import multipletests
+from scipy.stats import ranksums
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,75 +37,252 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+class DifferentialExpressionLoss(nn.Module):
+    def __init__(self, delta: float = 1.0, clamp_value: float = 10.0, reduction: str = "mean"):
+        super().__init__()
+        self.delta = delta
+        self.clamp_value = clamp_value
+        self.reduction = reduction
 
-import torch
-import torch.nn as nn
-
-class LambdaRankMeanTargetLoss(nn.Module):
-    def __init__(self, k=None, eps=1e-10):
+    def forward(self, pred, basal, de_labels):
         """
-        Vectorized top-k nDCG loss for gene expression ranking.
-        
+        pred: (B, S, G) - predicted perturbed cells
+        basal: (B, S, G) - basal/control cells
+        de_labels: (B, G) - precomputed DE labels {-1, 0, +1}
+        """
+        # Mean difference per gene
+        pred_diff = pred.mean(dim=1) - basal.mean(dim=1)   # (B, G)
+
+        # Clamp + squash to (-1, 1)
+        pred_diff = pred_diff.clamp(-self.clamp_value, self.clamp_value)
+        pred_de = torch.tanh(pred_diff)  # (B, G)
+
+        # Huber loss per element
+        loss = F.huber_loss(pred_de, de_labels, delta=self.delta, reduction="none")  # (B, G)
+
+        # Reduce
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss  # (B, G)
+
+
+class GeneRankingSpearmanLoss(nn.Module):
+    def __init__(self, regularization_strength=1e-4, k=None, weight=1.0):
+        """
         Args:
-            k: consider only top-k predicted genes per replicate. If None, use all genes.
-            eps: small constant to avoid divide-by-zero.
+            regularization_strength: smoothing factor for soft_rank (smaller = closer to true ranks)
+            k: number of top genes to consider (optional)
+            weight: scalar multiplier for the loss
         """
         super().__init__()
+        self.regularization_strength = regularization_strength
         self.k = k
+        self.weight = weight
+
+    def forward(self, pred, target):
+        """
+        Args:
+            pred: [B, S, G] predicted expression
+            target: [B, S, G] true expression
+        Returns:
+            Scalar Spearman ranking loss
+        """
+        B, S, G = pred.shape
+
+        # Step 1: pseudobulk over cells
+        mean_pred = pred.mean(dim=1)     # [B, G]
+        mean_target = target.mean(dim=1) # [B, G]
+
+        # Step 1b: optionally select top-k genes
+        if self.k is not None and self.k < G:
+            topk_idx = torch.topk(mean_target, self.k, dim=1).indices
+            mean_pred = torch.gather(mean_pred, 1, topk_idx)
+            mean_target = torch.gather(mean_target, 1, topk_idx)
+
+        # Move to CPU for soft_rank
+        mean_pred_cpu = mean_pred.cpu()
+        mean_target_cpu = mean_target.cpu()
+
+        # Step 2: differentiable soft ranks
+        pred_ranks = soft_rank(mean_pred_cpu, regularization_strength=self.regularization_strength)
+        target_ranks = soft_rank(mean_target_cpu, regularization_strength=self.regularization_strength)
+
+        # Move ranks back to original device
+        pred_ranks = pred_ranks.to(pred.device)
+        target_ranks = target_ranks.to(pred.device)
+        
+        if self.training:
+            # Ensure gradients are ready for pred_ranks and target_ranks
+            check_grad_ready(pred_ranks, "pred_ranks")
+
+        # Step 3: Spearman correlation = Pearson correlation of ranks
+        pred_centered = pred_ranks - pred_ranks.mean(dim=-1, keepdim=True)
+        target_centered = target_ranks - target_ranks.mean(dim=-1, keepdim=True)
+        
+        if self.training:
+            # Ensure gradients are ready for pred_centered and target_centered
+            check_grad_ready(pred_centered, "pred_centered")
+
+        pred_norm = pred_centered / (pred_centered.norm(dim=-1, keepdim=True) + 1e-8)
+        target_norm = target_centered / (target_centered.norm(dim=-1, keepdim=True) + 1e-8)
+        
+        if self.training:
+            # Ensure gradients are ready for pred_norm and target_norm
+            check_grad_ready(pred_norm, "pred_norm")
+
+        spearman_corr = (pred_norm * target_norm).sum(dim=-1)  # [B]
+        loss = 1 - spearman_corr.mean()  # maximize correlation → minimize 1 - corr
+        
+        if self.training:
+            # Ensure gradients are ready for loss
+            check_grad_ready(loss, "loss")
+
+        return loss * self.weight
+
+
+class GeneRankingPDSLoss(nn.Module):
+    """
+    Gene-wise version of the Perturbation Discrimination Score loss.
+    Now measures the ranking agreement of genes within a perturbation.
+    """
+    def __init__(self, tau=0.5, k=None, eps=1e-6, normalize=True, weight=1.0):
+        super().__init__()
+        self.tau = tau
+        self.k = k
+        self.eps = eps
+        self.normalize = normalize
+        self.weight = weight
+
+    def forward(self, preds, targets):
+        """
+        preds: [B, S, G]
+        targets: [B, S, G]
+        """
+        B, S, G = preds.shape
+        # Step 1: pseudobulk
+        preds_pb = preds.mean(dim=1)     # [B, G]
+        targets_pb = targets.mean(dim=1) # [B, G]
+
+        # Step 2: normalization if requested
+        if self.normalize:
+            preds_pb = preds_pb / (preds_pb.sum(dim=-1, keepdim=True) + self.eps)
+            targets_pb = targets_pb / (targets_pb.sum(dim=-1, keepdim=True) + self.eps)
+
+        # Step 3: top-k gene selection
+        if self.k is not None and self.k < G:
+            topk_idx = torch.topk(targets_pb, self.k, dim=1).indices
+            preds_pb = torch.gather(preds_pb, 1, topk_idx)
+            targets_pb = torch.gather(targets_pb, 1, topk_idx)
+
+        # Step 4: differentiable ranks
+        pred_ranks = soft_rank(preds_pb, regularization_strength=self.tau, dim=-1)
+        target_ranks = soft_rank(targets_pb, regularization_strength=self.tau, dim=-1)
+
+        # Step 5: Spearman correlation loss
+        pred_center = pred_ranks - pred_ranks.mean(dim=-1, keepdim=True)
+        target_center = target_ranks - target_ranks.mean(dim=-1, keepdim=True)
+
+        pred_norm = pred_center / (pred_center.norm(dim=-1, keepdim=True) + self.eps)
+        target_norm = target_center / (target_center.norm(dim=-1, keepdim=True) + self.eps)
+
+        spearman_corr = (pred_norm * target_norm).sum(dim=-1)  # [B]
+        loss = 1 - spearman_corr.mean()
+
+        return loss * self.weight
+
+
+class GeneRankingLambdaRank(nn.Module):
+    """
+    Gene-wise LambdaRank loss for pseudobulk gene ordering within perturbations.
+    """
+    def __init__(self, k=50, eps=1e-8, weight=10):
+        super().__init__()
+        self.top_k = k
+        self.eps = eps
+        self.weight = weight
+
+    def forward(self, preds, targets):
+        """
+        preds: [B, S, G]
+        targets: [B, S, G]
+        """
+        B, S, G = preds.shape
+        loss_total = 0.0
+        n_pairs_total = 0.0
+
+        # Step 1: pseudobulk
+        mean_preds = preds.mean(dim=1)     # [B, G]
+        mean_targets = targets.mean(dim=1) # [B, G]
+
+        for b in range(B):
+            # Step 2: top-k selection
+            topk_idx = torch.topk(mean_targets[b], min(self.top_k, G)).indices
+            pred_b = mean_preds[b, topk_idx]  # [k]
+            y_b = mean_targets[b, topk_idx]   # [k]
+
+            # Step 3: gain scaling
+            if y_b.max() - y_b.min() > 0:
+                gains = (2 ** ((y_b - y_b.min()) / (y_b.max() - y_b.min()))) - 1
+            else:
+                gains = torch.zeros_like(y_b)
+
+            k_eff = pred_b.shape[0]
+            diff = pred_b.unsqueeze(0) - pred_b.unsqueeze(1)  # [k,k]
+            delta = (gains.unsqueeze(0) - gains.unsqueeze(1)).abs()
+            mask = torch.triu(torch.ones_like(diff), diagonal=1)
+
+            pairwise_loss = torch.logaddexp(torch.zeros_like(diff), -diff) * delta * mask
+            loss_total += pairwise_loss.sum()
+            n_pairs_total += mask.sum()
+
+        if n_pairs_total == 0:
+            return torch.tensor(0.0, device=preds.device, requires_grad=True)
+
+        return (loss_total / (n_pairs_total + self.eps)) * self.weight
+
+
+class GeneRankingListNet(nn.Module):
+    """
+    Gene-wise ListNet loss for pseudobulk gene ordering within perturbations.
+    """
+    def __init__(self, k=None, weight=1.0, tau=0.3, eps=1e-8):
+        super().__init__()
+        self.k = k
+        self.weight = weight
+        self.tau = tau
         self.eps = eps
 
     def forward(self, preds, targets):
         """
-        Args:
-            preds:   [B, S, G] predicted expression
-            targets: [B, S, G] true expression
-        Returns:
-            Scalar nDCG loss in [0,1]
+        preds: [B, S, G]
+        targets: [B, S, G]
         """
         B, S, G = preds.shape
+        # Step 1: pseudobulk
+        mean_preds = preds.mean(dim=1)     # [B, G]
+        mean_targets = targets.mean(dim=1) # [B, G]
 
-        # Step 1: mean target per perturbation
-        mean_targets = targets.mean(dim=1)  # [B, G]
-
-        # Step 2: optional top-k filtering
+        # Step 2: top-k selection
         if self.k is not None and self.k < G:
-            topk_idx = torch.topk(preds, self.k, dim=2).indices  # [B, S, k]
-            preds = torch.gather(preds, 2, topk_idx)            # [B, S, k]
-            # Gather corresponding ground-truth values
-            y = torch.gather(mean_targets.unsqueeze(1).expand(-1, S, -1), 2, topk_idx)
+            topk_idx = torch.topk(mean_targets, self.k, dim=1).indices
+            mean_preds = torch.gather(mean_preds, 1, topk_idx)
+            mean_targets = torch.gather(mean_targets, 1, topk_idx)
+            G_eff = self.k
         else:
-            y = mean_targets.unsqueeze(1).expand(-1, S, -1)     # [B, S, G]
+            G_eff = G
 
-        # Step 3: compute gains (clip negative values to zero)
-        gains = 2 ** y - 1  # [B, S, k] or [B, S, G]
+        # Step 3: normalize targets
+        mean_targets = mean_targets - mean_targets.min(dim=1, keepdim=True)[0]
+        mean_targets = mean_targets / (mean_targets.sum(dim=1, keepdim=True) + self.eps)
 
-        # Step 4: compute discounts for positions 1..G_eff
-        G_eff = preds.shape[2]
-        discounts = 1.0 / torch.log2(torch.arange(2, G_eff + 2, device=preds.device).float())
-        discounts = discounts.view(1, 1, -1)  # broadcast to [1,1,G_eff]
+        # Step 4: softmax + cross entropy
+        preds_log_softmax = F.log_softmax(mean_preds / self.tau, dim=-1)  # [B, G_eff]
+        loss = -(mean_targets * preds_log_softmax).sum(dim=-1).mean()
 
-        # Step 5: DCG for predicted order
-        _, rank_idx = torch.sort(preds, dim=2, descending=True)
-        sorted_gains = torch.gather(gains, 2, rank_idx)
-        dcg = (sorted_gains * discounts).sum(dim=2)  # [B, S]
-
-        # Step 6: IDCG from ideal (ground-truth sorted) order
-        ideal_gains, _ = torch.sort(gains, dim=2, descending=True)
-        idcg = (ideal_gains * discounts).sum(dim=2)  # [B, S]
-        idcg = idcg + self.eps  # avoid divide by zero
-
-        # Step 7: nDCG and loss
-        ndcg = dcg / idcg         # [B, S], guaranteed in [0,1]
-        loss = 1.0 - ndcg.mean()  # scalar, non-negative
-        
-        # Ensure loss is non-negative
-        assert loss >= 0, f"Loss must be non-negative, got {loss}"
-
-        return loss
-
+        return loss * self.weight
 
 
 class CombinedLoss(nn.Module):
@@ -288,7 +476,11 @@ class StateTransitionPerturbationModel(PerturbationModel):
         self.ranking_loss = None
         self.top_k = kwargs.get("top_k", 200)
         if kwargs.get("ranking_loss", False):
-            self.ranking_loss = LambdaRankMeanTargetLoss(k=self.top_k)
+            self.ranking_loss = GeneRankingSpearmanLoss(k=self.top_k, weight=1.0)
+            
+        self.differential_expression_loss = None
+        if kwargs.get("differential_expression_loss", False):
+            self.differential_expression_loss = DifferentialExpressionLoss()
 
         self.freeze_pert_backbone = kwargs.get("freeze_pert_backbone", False)
         if self.freeze_pert_backbone:
@@ -510,15 +702,18 @@ class StateTransitionPerturbationModel(PerturbationModel):
             pred = self.forward(batch, padded=padded)
 
         target = batch["pert_cell_emb"]
-
+        basal = batch["ctrl_cell_emb"]
+        
         if padded:
             pred = pred.reshape(-1, self.cell_sentence_len, self.output_dim)
             target = target.reshape(-1, self.cell_sentence_len, self.output_dim)
+            basal = basal.reshape(-1, self.cell_sentence_len, self.output_dim)
         else:
             pred = pred.reshape(1, -1, self.output_dim)
             target = target.reshape(1, -1, self.output_dim)
+            basal = basal.reshape(1, -1, self.output_dim)
 
-        main_loss = self.loss_fn(pred, target).nanmean()
+        main_loss = torch.tensor(0) # self.loss_fn(pred, target).nanmean()
         self.log("train_loss", main_loss)
         
         # Log individual loss components if using combined loss
@@ -531,6 +726,20 @@ class StateTransitionPerturbationModel(PerturbationModel):
         # Process decoder if available
         decoder_loss = None
         total_loss = main_loss
+
+        if self.ranking_loss is not None:
+            check_grad_ready(pred, "pred")
+            ranking_loss = self.ranking_loss(pred, target)
+            check_grad_ready(ranking_loss, "ranking_loss")
+            self.log("train/ranking_loss", ranking_loss)
+            total_loss = total_loss + ranking_loss
+
+        if self.differential_expression_loss is not None:
+            check_grad_ready(pred, "pred")
+            de_loss = self.differential_expression_loss(pred, basal, target)
+            check_grad_ready(de_loss, "de_loss")
+            self.log("train/differential_expression_loss", de_loss)
+            total_loss = total_loss + de_loss
 
         if self.gene_decoder is not None and "pert_cell_counts" in batch:
             gene_targets = batch["pert_cell_counts"]
@@ -562,11 +771,6 @@ class StateTransitionPerturbationModel(PerturbationModel):
             self.log("decoder_loss", decoder_loss)
 
             total_loss = total_loss + self.decoder_loss_weight * decoder_loss
-            
-        if self.ranking_loss is not None:
-            ranking_loss = self.ranking_loss(pred, target)
-            self.log("train/ranking_loss", ranking_loss)
-            total_loss = total_loss + ranking_loss
 
         if confidence_pred is not None:
             # Detach main loss to prevent gradients flowing through it
@@ -616,6 +820,8 @@ class StateTransitionPerturbationModel(PerturbationModel):
         target = batch["pert_cell_emb"]
         target = target.reshape(-1, self.cell_sentence_len, self.output_dim)
 
+        basal = batch["ctrl_cell_emb"].reshape(-1, self.cell_sentence_len, self.output_dim)
+
         loss = self.loss_fn(pred, target).mean()
         self.log("val/recon_loss", loss)
         
@@ -623,7 +829,12 @@ class StateTransitionPerturbationModel(PerturbationModel):
             ranking_loss = self.ranking_loss(pred, target)
             self.log("val/ranking_loss", ranking_loss)
             loss += ranking_loss
-            self.log("val_loss", loss)
+        self.log("val_loss", loss)
+        
+        if self.differential_expression_loss is not None:
+            de_loss = self.differential_expression_loss(pred, basal, target)
+            self.log("val/differential_expression_loss", de_loss)
+            loss +=  de_loss
 
         # Log individual loss components if using combined loss
         if hasattr(self.loss_fn, 'sinkhorn_loss') and hasattr(self.loss_fn, 'energy_loss'):
