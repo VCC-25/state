@@ -19,10 +19,12 @@ from .utils import build_mlp, get_activation_class, get_transformer_backbone
 
 logger = logging.getLogger(__name__)
 
+
 def check_grad_ready(x, name="variable"):
     assert x.requires_grad, f"{name} must have requires_grad=True to compute gradients."
     assert x.grad_fn is not None, f"{name} must have a grad_fn to compute gradients."
-    
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,6 +38,7 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 class DifferentialExpressionLoss(nn.Module):
     def __init__(self, delta: float = 1.0, clamp_value: float = 10.0, reduction: str = "mean"):
@@ -51,7 +54,7 @@ class DifferentialExpressionLoss(nn.Module):
         de_labels: (B, G) - precomputed DE labels {-1, 0, +1}
         """
         # Mean difference per gene
-        pred_diff = pred.mean(dim=1) - basal.mean(dim=1)   # (B, G)
+        pred_diff = pred.mean(dim=1) - basal.mean(dim=1)  # (B, G)
 
         # Clamp + squash to (-1, 1)
         pred_diff = pred_diff.clamp(-self.clamp_value, self.clamp_value)
@@ -93,8 +96,8 @@ class GeneRankingSpearmanLoss(nn.Module):
         B, S, G = pred.shape
 
         # Step 1: pseudobulk over cells
-        mean_pred = pred.mean(dim=1)     # [B, G]
-        mean_target = target.mean(dim=1) # [B, G]
+        mean_pred = pred.mean(dim=1)  # [B, G]
+        mean_target = target.mean(dim=1)  # [B, G]
 
         # Step 1b: optionally select top-k genes
         if self.k is not None and self.k < G:
@@ -113,7 +116,7 @@ class GeneRankingSpearmanLoss(nn.Module):
         # Move ranks back to original device
         pred_ranks = pred_ranks.to(pred.device)
         target_ranks = target_ranks.to(pred.device)
-        
+
         if self.training:
             # Ensure gradients are ready for pred_ranks and target_ranks
             check_grad_ready(pred_ranks, "pred_ranks")
@@ -121,21 +124,21 @@ class GeneRankingSpearmanLoss(nn.Module):
         # Step 3: Spearman correlation = Pearson correlation of ranks
         pred_centered = pred_ranks - pred_ranks.mean(dim=-1, keepdim=True)
         target_centered = target_ranks - target_ranks.mean(dim=-1, keepdim=True)
-        
+
         if self.training:
             # Ensure gradients are ready for pred_centered and target_centered
             check_grad_ready(pred_centered, "pred_centered")
 
         pred_norm = pred_centered / (pred_centered.norm(dim=-1, keepdim=True) + 1e-8)
         target_norm = target_centered / (target_centered.norm(dim=-1, keepdim=True) + 1e-8)
-        
+
         if self.training:
             # Ensure gradients are ready for pred_norm and target_norm
             check_grad_ready(pred_norm, "pred_norm")
 
         spearman_corr = (pred_norm * target_norm).sum(dim=-1)  # [B]
         loss = 1 - spearman_corr.mean()  # maximize correlation → minimize 1 - corr
-        
+
         if self.training:
             # Ensure gradients are ready for loss
             check_grad_ready(loss, "loss")
@@ -148,6 +151,7 @@ class GeneRankingPDSLoss(nn.Module):
     Gene-wise version of the Perturbation Discrimination Score loss.
     Now measures the ranking agreement of genes within a perturbation.
     """
+
     def __init__(self, tau=0.5, k=None, eps=1e-6, normalize=True, weight=1.0):
         super().__init__()
         self.tau = tau
@@ -163,8 +167,8 @@ class GeneRankingPDSLoss(nn.Module):
         """
         B, S, G = preds.shape
         # Step 1: pseudobulk
-        preds_pb = preds.mean(dim=1)     # [B, G]
-        targets_pb = targets.mean(dim=1) # [B, G]
+        preds_pb = preds.mean(dim=1)  # [B, G]
+        targets_pb = targets.mean(dim=1)  # [B, G]
 
         # Step 2: normalization if requested
         if self.normalize:
@@ -198,6 +202,7 @@ class GeneRankingLambdaRank(nn.Module):
     """
     Gene-wise LambdaRank loss for pseudobulk gene ordering within perturbations.
     """
+
     def __init__(self, k=50, eps=1e-8, weight=10):
         super().__init__()
         self.top_k = k
@@ -214,14 +219,14 @@ class GeneRankingLambdaRank(nn.Module):
         n_pairs_total = 0.0
 
         # Step 1: pseudobulk
-        mean_preds = preds.mean(dim=1)     # [B, G]
-        mean_targets = targets.mean(dim=1) # [B, G]
+        mean_preds = preds.mean(dim=1)  # [B, G]
+        mean_targets = targets.mean(dim=1)  # [B, G]
 
         for b in range(B):
             # Step 2: top-k selection
             topk_idx = torch.topk(mean_targets[b], min(self.top_k, G)).indices
             pred_b = mean_preds[b, topk_idx]  # [k]
-            y_b = mean_targets[b, topk_idx]   # [k]
+            y_b = mean_targets[b, topk_idx]  # [k]
 
             # Step 3: gain scaling
             if y_b.max() - y_b.min() > 0:
@@ -248,6 +253,7 @@ class GeneRankingListNet(nn.Module):
     """
     Gene-wise ListNet loss for pseudobulk gene ordering within perturbations.
     """
+
     def __init__(self, k=None, weight=1.0, tau=0.3, eps=1e-8):
         super().__init__()
         self.k = k
@@ -262,8 +268,8 @@ class GeneRankingListNet(nn.Module):
         """
         B, S, G = preds.shape
         # Step 1: pseudobulk
-        mean_preds = preds.mean(dim=1)     # [B, G]
-        mean_targets = targets.mean(dim=1) # [B, G]
+        mean_preds = preds.mean(dim=1)  # [B, G]
+        mean_targets = targets.mean(dim=1)  # [B, G]
 
         # Step 2: top-k selection
         if self.k is not None and self.k < G:
@@ -289,17 +295,19 @@ class CombinedLoss(nn.Module):
     """
     Combined Sinkhorn + Energy loss
     """
+
     def __init__(self, sinkhorn_weight=0.001, energy_weight=1.0, blur=0.05):
         super().__init__()
         self.sinkhorn_weight = sinkhorn_weight
         self.energy_weight = energy_weight
         self.sinkhorn_loss = SamplesLoss(loss="sinkhorn", blur=blur)
         self.energy_loss = SamplesLoss(loss="energy", blur=blur)
-    
+
     def forward(self, pred, target):
         sinkhorn_val = self.sinkhorn_loss(pred, target)
         energy_val = self.energy_loss(pred, target)
         return self.sinkhorn_weight * sinkhorn_val + self.energy_weight * energy_val
+
 
 class ConfidenceToken(nn.Module):
     """
@@ -472,12 +480,12 @@ class StateTransitionPerturbationModel(PerturbationModel):
         if kwargs.get("confidence_token", False):
             self.confidence_token = ConfidenceToken(hidden_dim=self.hidden_dim, dropout=self.dropout)
             self.confidence_loss_fn = nn.MSELoss()
-            
+
         self.ranking_loss = None
         self.top_k = kwargs.get("top_k", 200)
         if kwargs.get("ranking_loss", False):
             self.ranking_loss = GeneRankingSpearmanLoss(k=self.top_k, weight=1.0)
-            
+
         self.differential_expression_loss = None
         if kwargs.get("differential_expression_loss", False):
             self.differential_expression_loss = DifferentialExpressionLoss()
@@ -575,7 +583,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
             activation=self.activation_class,
         )
 
-        if self.output_space == 'all':
+        if self.output_space == "all":
             self.final_down_then_up = nn.Sequential(
                 nn.Linear(self.output_dim, self.output_dim // 8),
                 nn.GELU(),
@@ -703,7 +711,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         target = batch["pert_cell_emb"]
         basal = batch["ctrl_cell_emb"]
-        
+
         if padded:
             pred = pred.reshape(-1, self.cell_sentence_len, self.output_dim)
             target = target.reshape(-1, self.cell_sentence_len, self.output_dim)
@@ -713,11 +721,11 @@ class StateTransitionPerturbationModel(PerturbationModel):
             target = target.reshape(1, -1, self.output_dim)
             basal = basal.reshape(1, -1, self.output_dim)
 
-        main_loss = torch.tensor(0) # self.loss_fn(pred, target).nanmean()
+        main_loss = self.loss_fn(pred, target).nanmean()
         self.log("train_loss", main_loss)
-        
+
         # Log individual loss components if using combined loss
-        if hasattr(self.loss_fn, 'sinkhorn_loss') and hasattr(self.loss_fn, 'energy_loss'):
+        if hasattr(self.loss_fn, "sinkhorn_loss") and hasattr(self.loss_fn, "energy_loss"):
             sinkhorn_component = self.loss_fn.sinkhorn_loss(pred, target).nanmean()
             energy_component = self.loss_fn.energy_loss(pred, target).nanmean()
             self.log("train/sinkhorn_loss", sinkhorn_component)
@@ -729,14 +737,17 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         if self.ranking_loss is not None:
             check_grad_ready(pred, "pred")
-            ranking_loss = self.ranking_loss(pred, target)
+            ranking_target = batch["rank_target"]
+            ranking_loss = self.ranking_loss(pred, ranking_target)
             check_grad_ready(ranking_loss, "ranking_loss")
             self.log("train/ranking_loss", ranking_loss)
             total_loss = total_loss + ranking_loss
 
         if self.differential_expression_loss is not None:
             check_grad_ready(pred, "pred")
-            de_loss = self.differential_expression_loss(pred, basal, target)
+            de_target = batch["de_target"]
+            print(f"DEBUG: de_target: {de_target.shape}")
+            de_loss = self.differential_expression_loss(pred, basal, de_target)
             check_grad_ready(de_loss, "de_loss")
             self.log("train/differential_expression_loss", de_loss)
             total_loss = total_loss + de_loss
@@ -824,20 +835,22 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         loss = self.loss_fn(pred, target).mean()
         self.log("val/recon_loss", loss)
-        
+
         if self.ranking_loss is not None:
-            ranking_loss = self.ranking_loss(pred, target)
+            ranking_target = batch["rank_target"]
+            ranking_loss = self.ranking_loss(pred, ranking_target)
             self.log("val/ranking_loss", ranking_loss)
             loss += ranking_loss
         self.log("val_loss", loss)
-        
+
         if self.differential_expression_loss is not None:
-            de_loss = self.differential_expression_loss(pred, basal, target)
+            de_target = batch["de_target"]
+            de_loss = self.differential_expression_loss(pred, basal, de_target)
             self.log("val/differential_expression_loss", de_loss)
-            loss +=  de_loss
+            loss += de_loss
 
         # Log individual loss components if using combined loss
-        if hasattr(self.loss_fn, 'sinkhorn_loss') and hasattr(self.loss_fn, 'energy_loss'):
+        if hasattr(self.loss_fn, "sinkhorn_loss") and hasattr(self.loss_fn, "energy_loss"):
             sinkhorn_component = self.loss_fn.sinkhorn_loss(pred, target).mean()
             energy_component = self.loss_fn.energy_loss(pred, target).mean()
             self.log("val/sinkhorn_loss", sinkhorn_component)
