@@ -41,27 +41,42 @@ import torch.nn.functional as F
 
 
 class DifferentialExpressionLoss(nn.Module):
-    def __init__(self, delta: float = 1.0, clamp_value: float = 10.0, reduction: str = "mean"):
+    def __init__(self, delta: float = 1.0, clamp_value: float = 10.0, reduction: str = "mean", weight=1.0):
         super().__init__()
         self.delta = delta
         self.clamp_value = clamp_value
         self.reduction = reduction
+        self.weight = weight
 
     def forward(self, pred, basal, de_labels):
         """
         pred: (B, S, G) - predicted perturbed cells
         basal: (B, S, G) - basal/control cells
-        de_labels: (B, G) - precomputed DE labels {-1, 0, +1}
+        de_labels: (B*S, G) - precomputed DE labels {-1, 0, +1}
         """
+        
+        B, S, G = pred.shape
+
+        # Step 0: reshape target to match pred
+        de_labels = de_labels.unsqueeze(1).reshape(B, S, G)  # [B, S, G]
+
         # Mean difference per gene
         pred_diff = pred.mean(dim=1) - basal.mean(dim=1)  # (B, G)
+        mean_target = de_labels.mean(dim=1)  # [B, G]
+        
+        # assert that the only values in mean_target are 0, 1, or -1
+        assert torch.all(torch.isin(mean_target.cpu(), torch.tensor([-1, 0, 1]))), f"mean_target must be in {-1, 0, 1}, got {mean_target}"
 
         # Clamp + squash to (-1, 1)
+        print(f"DEBUG: max pred_diff {pred_diff.max()}, min pred_diff {pred_diff.min()}")
         pred_diff = pred_diff.clamp(-self.clamp_value, self.clamp_value)
         pred_de = torch.tanh(pred_diff)  # (B, G)
 
         # Huber loss per element
-        loss = F.huber_loss(pred_de, de_labels, delta=self.delta, reduction="none")  # (B, G)
+        loss = F.l1_loss(pred_de, mean_target, reduction="none")  # (B, G)
+
+        # Apply weight
+        loss = loss * self.weight
 
         # Reduce
         if self.reduction == "mean":
@@ -89,11 +104,14 @@ class GeneRankingSpearmanLoss(nn.Module):
         """
         Args:
             pred: [B, S, G] predicted expression
-            target: [B, S, G] true expression
+            target: [B, G] true expression
         Returns:
             Scalar Spearman ranking loss
         """
         B, S, G = pred.shape
+        
+        # Step 0: reshape target to match pred
+        target = target.unsqueeze(1).reshape(B, S, G)  # [B, S, G]
 
         # Step 1: pseudobulk over cells
         mean_pred = pred.mean(dim=1)  # [B, G]
@@ -488,7 +506,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         self.differential_expression_loss = None
         if kwargs.get("differential_expression_loss", False):
-            self.differential_expression_loss = DifferentialExpressionLoss()
+            self.differential_expression_loss = DifferentialExpressionLoss(weight=10)
 
         self.freeze_pert_backbone = kwargs.get("freeze_pert_backbone", False)
         if self.freeze_pert_backbone:
@@ -733,7 +751,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         # Process decoder if available
         decoder_loss = None
-        total_loss = main_loss
+        total_loss = torch.tensor(0) #main_loss
 
         if self.ranking_loss is not None:
             check_grad_ready(pred, "pred")
@@ -746,7 +764,6 @@ class StateTransitionPerturbationModel(PerturbationModel):
         if self.differential_expression_loss is not None:
             check_grad_ready(pred, "pred")
             de_target = batch["de_target"]
-            print(f"DEBUG: de_target: {de_target.shape}")
             de_loss = self.differential_expression_loss(pred, basal, de_target)
             check_grad_ready(de_loss, "de_loss")
             self.log("train/differential_expression_loss", de_loss)
@@ -833,7 +850,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         basal = batch["ctrl_cell_emb"].reshape(-1, self.cell_sentence_len, self.output_dim)
 
-        loss = self.loss_fn(pred, target).mean()
+        loss = torch.tensor(0) # self.loss_fn(pred, target).mean()
         self.log("val/recon_loss", loss)
 
         if self.ranking_loss is not None:
@@ -841,13 +858,13 @@ class StateTransitionPerturbationModel(PerturbationModel):
             ranking_loss = self.ranking_loss(pred, ranking_target)
             self.log("val/ranking_loss", ranking_loss)
             loss += ranking_loss
-        self.log("val_loss", loss)
-
+        
         if self.differential_expression_loss is not None:
             de_target = batch["de_target"]
             de_loss = self.differential_expression_loss(pred, basal, de_target)
             self.log("val/differential_expression_loss", de_loss)
             loss += de_loss
+        self.log("val_loss", loss)
 
         # Log individual loss components if using combined loss
         if hasattr(self.loss_fn, "sinkhorn_loss") and hasattr(self.loss_fn, "energy_loss"):
