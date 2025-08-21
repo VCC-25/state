@@ -9,7 +9,6 @@ uv.lock
 src/state/configs/wandb/*
 !src/state/configs/wandb/defaults.yaml
 tmp/
-notebooks/
 *.sif
 competition/
 competition_support_set/

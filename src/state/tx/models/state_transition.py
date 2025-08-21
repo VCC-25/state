@@ -48,10 +48,11 @@ class DifferentialExpressionLoss(nn.Module):
         self.reduction = reduction
         self.weight = weight
 
-    def forward(self, pred, basal, de_labels):
+    def forward(self, pred, basal, pert_embed, de_labels, divergence_function):
         """
         pred: (B, S, G) - predicted perturbed cells
         basal: (B, S, G) - basal/control cells
+        pert_embed: (B, S, G) - perturbation embeddings
         de_labels: (B*S, G) - precomputed DE labels {-1, 0, +1}
         """
         
@@ -60,31 +61,9 @@ class DifferentialExpressionLoss(nn.Module):
         # Step 0: reshape target to match pred
         de_labels = de_labels.unsqueeze(1).reshape(B, S, G)  # [B, S, G]
 
-        # Mean difference per gene
-        pred_diff = pred.mean(dim=1) - basal.mean(dim=1)  # (B, G)
-        mean_target = de_labels.mean(dim=1)  # [B, G]
-        
-        # assert that the only values in mean_target are 0, 1, or -1
-        assert torch.all(torch.isin(mean_target.cpu(), torch.tensor([-1, 0, 1]))), f"mean_target must be in {-1, 0, 1}, got {mean_target}"
+        de_target = basal*(de_labels == 0) + pert_embed*(de_labels != 0)  # [B, S, G]
 
-        # Clamp + squash to (-1, 1)
-        print(f"DEBUG: max pred_diff {pred_diff.max()}, min pred_diff {pred_diff.min()}")
-        pred_diff = pred_diff.clamp(-self.clamp_value, self.clamp_value)
-        pred_de = torch.tanh(pred_diff)  # (B, G)
-
-        # Huber loss per element
-        loss = F.l1_loss(pred_de, mean_target, reduction="none")  # (B, G)
-
-        # Apply weight
-        loss = loss * self.weight
-
-        # Reduce
-        if self.reduction == "mean":
-            return loss.mean()
-        elif self.reduction == "sum":
-            return loss.sum()
-        else:
-            return loss  # (B, G)
+        return divergence_function(pred, de_target).nanmean() * self.weight
 
 
 class GeneRankingSpearmanLoss(nn.Module):
@@ -738,7 +717,6 @@ class StateTransitionPerturbationModel(PerturbationModel):
             pred = pred.reshape(1, -1, self.output_dim)
             target = target.reshape(1, -1, self.output_dim)
             basal = basal.reshape(1, -1, self.output_dim)
-
         main_loss = self.loss_fn(pred, target).nanmean()
         self.log("train_loss", main_loss)
 
@@ -764,7 +742,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
         if self.differential_expression_loss is not None:
             check_grad_ready(pred, "pred")
             de_target = batch["de_target"]
-            de_loss = self.differential_expression_loss(pred, basal, de_target)
+            de_loss = self.differential_expression_loss(pred, basal, target, de_target, self.loss_fn)
             check_grad_ready(de_loss, "de_loss")
             self.log("train/differential_expression_loss", de_loss)
             total_loss = total_loss + de_loss
@@ -850,7 +828,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         basal = batch["ctrl_cell_emb"].reshape(-1, self.cell_sentence_len, self.output_dim)
 
-        loss = torch.tensor(0) # self.loss_fn(pred, target).mean()
+        loss = torch.tensor(0.) # self.loss_fn(pred, target).mean()
         self.log("val/recon_loss", loss)
 
         if self.ranking_loss is not None:
@@ -861,9 +839,9 @@ class StateTransitionPerturbationModel(PerturbationModel):
         
         if self.differential_expression_loss is not None:
             de_target = batch["de_target"]
-            de_loss = self.differential_expression_loss(pred, basal, de_target)
+            de_loss = self.differential_expression_loss(pred, basal, target, de_target, self.loss_fn)
             self.log("val/differential_expression_loss", de_loss)
-            loss += de_loss
+            loss += de_loss.to(loss.device)
         self.log("val_loss", loss)
 
         # Log individual loss components if using combined loss
