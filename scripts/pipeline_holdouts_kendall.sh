@@ -6,7 +6,7 @@
 MODEL_DIR="competition"
 
 # experiment name
-DIR_NAME="kendall_de"
+DIR_NAME="kendall_baseline_pert_generalize"
 
 # toml config path
 TOML_CONFIG="examples/fewshot.toml"
@@ -16,6 +16,9 @@ PREP_TOML_CONFIG="examples/fewshot_prep.toml"
 
 # Competition support set
 COMPETITION_SUPPORT_SET="/raid/kreid/v_cell/competition_support_set"
+
+# val template path
+VAL_TEMPLATE_PATH="/raid/kreid/v_cell/competition_support_set/template/competition_val_template.h5ad"
 
 # perturbation features file
 PERT_FEATURES="/raid/kreid/v_cell/competition_support_set/ESM2_pert_features.pt"
@@ -28,7 +31,7 @@ OUT_DIR=cell-eval-outdir/${DIR_NAME}
 
 # parallelization
 THREADS=8
-NUM_WORKERS=8
+NUM_WORKERS=6
 BATCH_SIZE=64
 
 # Exit on error
@@ -46,18 +49,17 @@ uv run state tx train \
   data.kwargs.cell_type_key=cell_type \
   data.kwargs.control_pert=non-targeting \
   data.kwargs.perturbation_features_file=${PERT_FEATURES} \
-  training.max_steps=1000 \
-  training.ckpt_every_n_steps=2500 \
-  training.val_freq=50 \
-  training.lr=1e-5 \
+  training.max_steps=40000 \
+  training.ckpt_every_n_steps=10000 \
+  training.val_freq=500 \
   model=state_sm \
   model.kwargs.nb_decoder=false \
-  +model.kwargs.differential_expression_loss=true \
+  +model.kwargs.differential_expression_loss=false \
   +model.kwargs.ranking_loss=false \
   wandb.tags=[${DIR_NAME}] \
   output_dir=${MODEL_DIR} \
   name=${DIR_NAME} \
-  use_wandb=false
+  use_wandb=false \
 
 uv run scripts/prepare_holdout_ground_truth.py \
   --toml_config ${PREP_TOML_CONFIG} \
@@ -77,7 +79,7 @@ uv run -m cell_eval baseline \
     --control-pert non-targeting \
     --num-threads ${THREADS} 
 
-# get just the checkpoint filename
+# # get just the checkpoint filename
 CKPT=$(basename $(ls ${MODEL_DIR}/${DIR_NAME}/checkpoints/*val_loss*.ckpt | head -n 1))
 echo "Using checkpoint filename: $CKPT"
 
@@ -133,14 +135,14 @@ uv run -m cell_eval score \
     -I ${OUT_DIR}/cell-eval-outdir-baseline/agg_results.csv \
     -o ${OUT_DIR}/baseline_diff_test.csv
 
-# # gets prediction.h5ad for the holdout predictions
-# # uv run state tx infer \
-# #   --output ${MODEL_DIR}/${DIR_NAME}/competition_val_prediction.h5ad \
-# #   --model_dir ${MODEL_DIR}/${DIR_NAME} \
-# #   --checkpoint ${MODEL_DIR}/${DIR_NAME}/checkpoints/${CKPT} \
-# #   --adata ${COMPETITION_SUPPORT_SET}/competition_val_template.h5ad \
-# #   --pert_col target_gene
+# gets prediction.h5ad for the holdout predictions
+uv run state tx infer \
+  --output ${MODEL_DIR}/${DIR_NAME}/competition_val_prediction.h5ad \
+  --model_dir ${MODEL_DIR}/${DIR_NAME} \
+  --checkpoint ${MODEL_DIR}/${DIR_NAME}/checkpoints/${CKPT} \
+  --adata ${VAL_TEMPLATE_PATH} \
+  --pert_col target_gene
 
 # echo "#### Running cell-eval prep ####"
-# # # remember to have `sudo apt install -y zstd` before running this
-# # uv tool run --from git+https://github.com/ArcInstitute/cell-eval@main cell-eval prep -i ${MODEL_DIR}/${DIR_NAME}/competition_val_prediction.h5ad -g ${COMPETITION_SUPPORT_SET}/gene_names.csv
+# # remember to have `sudo apt install -y zstd` before running this
+# - -i ${MODEL_DIR}/${DIR_NAME}/competition_val_prediction.h5ad -g ${COMPETITION_SUPPORT_SET}/gene_names.csv
