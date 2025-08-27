@@ -448,7 +448,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
             input_dim=input_dim,
             hidden_dim=hidden_dim,
             gene_dim=gene_dim,
-            output_dim=output_dim*3,
+            output_dim=output_dim,
             pert_dim=pert_dim,
             batch_dim=batch_dim,
             output_space=output_space,
