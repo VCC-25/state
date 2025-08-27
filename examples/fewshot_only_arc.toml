@@ -6,7 +6,7 @@ competition = "train"
 
 [zeroshot]
 
-[fewshot."competition.competition_train"]
+[fewshot."competition.ARC_H1"]
 test = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
        'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
        'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
@@ -15,3 +15,29 @@ test = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
        'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
        'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
        'SMARCA5', ]
+
+val = [ 'KDM1A',
+ 'GSK3B',
+ 'METTL14',
+ 'WSB2',
+ 'OXCT1',
+ 'FDPS',
+ 'MED13L',
+ 'DLG5',
+ 'ZNF426',
+ 'HMGN1',
+ 'DLG5',
+ 'MKI67',
+ 'IDE',
+ 'C1QBP',
+ 'ZNF286A',
+ 'BRD9',
+ 'IKBKG',
+ 'SHPRH',
+ 'TAZ',
+ 'STAT6',
+ 'SSBP1',
+ 'EWSR1',
+ 'RAF1',
+ 'CALM3',
+ 'ACAT2']

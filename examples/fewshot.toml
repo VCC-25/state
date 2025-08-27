@@ -7,19 +7,61 @@ competition = "train"
 [zeroshot]
 
 [fewshot."competition.ARC_H1"]
-test = [ "ACLY", "BRD9", "C1QBP", "CAST", "CENPB", "CENPO", "COX4I1", "DHCR24", "GNG12", "IKBKG", "KAT2A", "KDM1A", "KLHDC2", "MAPKAPK2", "MED12", "MED13", "METTL3", "MGST1", "MTFR1", "NIT1", "OXA1L", "PMS1", "PRDM14", "RAF1", "SALL4", "SMARCA4", "TARBP2", "TET1", "UQCRB", "ZNF581", "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+test = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
+       'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
+       'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
+       'WFS1', 'FDPS', 'UBE3C', 'MAU2', 'HIRA', 'SNCA', 'NRAS', 'CREG1',
+       'HSBP1', 'MKI67', 'TGFBR2', 'ZNF714', 'DZIP3', 'ZNF593', 'EPB41L2',
+       'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
+       'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
+       'SMARCA5', ]
 
 [fewshot."competition.hepg2"]
-val = [ "ACLY", "BRD9", "C1QBP", "CAST", "CENPB", "CENPO", "COX4I1", "DHCR24", "GNG12", "IKBKG", "KAT2A", "KDM1A", "KLHDC2", "MAPKAPK2", "MED12", "MED13", "METTL3", "MGST1", "MTFR1", "NIT1", "OXA1L", "PMS1", "PRDM14", "RAF1", "SALL4", "SMARCA4", "TARBP2", "TET1", "UQCRB", "ZNF581", "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+val = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
+       'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
+       'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
+       'WFS1', 'FDPS', 'UBE3C', 'MAU2', 'HIRA', 'SNCA', 'NRAS', 'CREG1',
+       'HSBP1', 'MKI67', 'TGFBR2', 'ZNF714', 'DZIP3', 'ZNF593', 'EPB41L2',
+       'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
+       'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
+       'SMARCA5', ]
 
 [fewshot."competition.jurkat"]
-val = [ "ACLY", "BRD9", "C1QBP", "CAST", "CENPB", "CENPO", "COX4I1", "DHCR24", "GNG12", "IKBKG", "KAT2A", "KDM1A", "KLHDC2", "MAPKAPK2", "MED12", "MED13", "METTL3", "MGST1", "MTFR1", "NIT1", "OXA1L", "PMS1", "PRDM14", "RAF1", "SALL4", "SMARCA4", "TARBP2", "TET1", "UQCRB", "ZNF581", "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+val = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
+       'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
+       'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
+       'WFS1', 'FDPS', 'UBE3C', 'MAU2', 'HIRA', 'SNCA', 'NRAS', 'CREG1',
+       'HSBP1', 'MKI67', 'TGFBR2', 'ZNF714', 'DZIP3', 'ZNF593', 'EPB41L2',
+       'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
+       'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
+       'SMARCA5', ]
 
 [fewshot."competition.k562"]
-val = [ "ACLY", "BRD9", "C1QBP", "CAST", "CENPB", "CENPO", "COX4I1", "DHCR24", "GNG12", "IKBKG", "KAT2A", "KDM1A", "KLHDC2", "MAPKAPK2", "MED12", "MED13", "METTL3", "MGST1", "MTFR1", "NIT1", "OXA1L", "PMS1", "PRDM14", "RAF1", "SALL4", "SMARCA4", "TARBP2", "TET1", "UQCRB", "ZNF581", "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+val = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
+       'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
+       'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
+       'WFS1', 'FDPS', 'UBE3C', 'MAU2', 'HIRA', 'SNCA', 'NRAS', 'CREG1',
+       'HSBP1', 'MKI67', 'TGFBR2', 'ZNF714', 'DZIP3', 'ZNF593', 'EPB41L2',
+       'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
+       'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
+       'SMARCA5', ]
 
 [fewshot."competition.rpe1"]
-val = [ "ACLY", "BRD9", "C1QBP", "CAST", "CENPB", "CENPO", "COX4I1", "DHCR24", "GNG12", "IKBKG", "KAT2A", "KDM1A", "KLHDC2", "MAPKAPK2", "MED12", "MED13", "METTL3", "MGST1", "MTFR1", "NIT1", "OXA1L", "PMS1", "PRDM14", "RAF1", "SALL4", "SMARCA4", "TARBP2", "TET1", "UQCRB", "ZNF581", "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+val = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
+       'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
+       'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
+       'WFS1', 'FDPS', 'UBE3C', 'MAU2', 'HIRA', 'SNCA', 'NRAS', 'CREG1',
+       'HSBP1', 'MKI67', 'TGFBR2', 'ZNF714', 'DZIP3', 'ZNF593', 'EPB41L2',
+       'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
+       'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
+       'SMARCA5', ]
 
 [fewshot."competition.k562_gwps"]
-val = [ "ACLY", "BRD9", "C1QBP", "CAST", "CENPB", "CENPO", "COX4I1", "DHCR24", "GNG12", "IKBKG", "KAT2A", "KDM1A", "KLHDC2", "MAPKAPK2", "MED12", "MED13", "METTL3", "MGST1", "MTFR1", "NIT1", "OXA1L", "PMS1", "PRDM14", "RAF1", "SALL4", "SMARCA4", "TARBP2", "TET1", "UQCRB", "ZNF581", "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+val = [ 'RAB3B', 'CLDN6', 'INSIG1', 'SOX2', 'MED1', 'TMBIM6', 'ATM',
+       'BRD9', 'non-targeting', 'TAZ', 'CALM3', 'DNMT1', 'OXA1L',
+       'MAP3K7', 'EID2', 'MED13L', 'IKBKG', 'CASP3', 'CDCA2', 'LAD1',
+       'WFS1', 'FDPS', 'UBE3C', 'MAU2', 'HIRA', 'SNCA', 'NRAS', 'CREG1',
+       'HSBP1', 'MKI67', 'TGFBR2', 'ZNF714', 'DZIP3', 'ZNF593', 'EPB41L2',
+       'ATP6V0C', 'TMSB10', 'MED24', 'HAT1', 'PMS1', 'TRAM2', 'IRF3',
+       'SV2A', 'SMAGP', 'PMEL', 'STAG2', 'MED13', 'PRDM14', 'TWF2',
+       'SMARCA5', ]

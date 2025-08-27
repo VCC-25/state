@@ -39,6 +39,40 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+def focal_loss(inputs, targets, alpha=1, gamma=2):
+    # Binary Cross-Entropy loss calculation
+    bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+    pt = torch.exp(-bce_loss)  # Convert BCE loss to probability
+    focal_loss = alpha * (1 - pt) ** gamma * bce_loss  # Apply focal adjustment
+    return focal_loss.mean()
+
+class DEClassificationLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred, de_labels):
+        """
+        pred: (B, S, G*3) - predicted perturbed cells
+        de_labels: (B*S, G) - precomputed DE labels {-1, 0, +1}
+        """
+
+        B, S, G = pred.shape
+
+        # Step 0: reshape target to match pred
+        de_labels = de_labels.unsqueeze(1).reshape(B, S, G)  # [B, S, G]
+
+        # reshape the predictions to match the one-hot encoding
+        pred_reshaped = pred.view(B, S, G, 3)
+
+        # encode the DE labels as one hot for cross entropy
+        de_labels_one_hot = F.one_hot(de_labels + 1, num_classes=3).float()  # [B, S, G, 3]
+        
+        # calculate the accuracy
+        preds = torch.argmax(pred_reshaped, dim=-1)
+        correct = (preds == de_labels_one_hot).float()
+        accuracy = correct.sum() / correct.numel()
+
+        return focal_loss(pred_reshaped, de_labels_one_hot)
 
 class DifferentialExpressionLoss(nn.Module):
     def __init__(self, delta: float = 1.0, reduction: str = "mean", weight=1.0):
@@ -414,7 +448,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
             input_dim=input_dim,
             hidden_dim=hidden_dim,
             gene_dim=gene_dim,
-            output_dim=output_dim,
+            output_dim=output_dim*3,
             pert_dim=pert_dim,
             batch_dim=batch_dim,
             output_space=output_space,
@@ -492,6 +526,10 @@ class StateTransitionPerturbationModel(PerturbationModel):
         self.differential_expression_loss = None
         if kwargs.get("differential_expression_loss", False):
             self.differential_expression_loss = DifferentialExpressionLoss()
+            
+        self.de_class_loss = None
+        if kwargs.get("de_classification_loss", False):
+            self.de_class_loss = DEClassificationLoss()
 
         self.freeze_pert_backbone = kwargs.get("freeze_pert_backbone", False)
         if self.freeze_pert_backbone:
@@ -691,6 +729,8 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         # apply relu if specified and we output to HVG space
         is_gene_space = self.hparams["embed_key"] == "X_hvg" or self.hparams["embed_key"] is None
+        if self.de_class_loss is not None:
+            is_gene_space = False  # don't relu if using de classification loss
         # logger.info(f"DEBUG: is_gene_space: {is_gene_space}")
         # logger.info(f"DEBUG: self.gene_decoder: {self.gene_decoder}")
         if is_gene_space or self.gene_decoder is None:
@@ -723,8 +763,6 @@ class StateTransitionPerturbationModel(PerturbationModel):
             pred = pred.reshape(1, -1, self.output_dim)
             target = target.reshape(1, -1, self.output_dim)
             basal = basal.reshape(1, -1, self.output_dim)
-        main_loss = self.loss_fn(pred, target).nanmean()
-        self.log("train_loss", main_loss)
 
         # Log individual loss components if using combined loss
         if hasattr(self.loss_fn, "sinkhorn_loss") and hasattr(self.loss_fn, "energy_loss"):
@@ -739,7 +777,14 @@ class StateTransitionPerturbationModel(PerturbationModel):
             de_target = batch["de_target"]
             total_loss = self.differential_expression_loss(pred, basal, target, de_target, self.loss_fn)
             self.log("train/differential_expression_loss", total_loss)
+        elif self.de_class_loss is not None:
+            de_target = batch["de_target"]
+            total_loss, accuracy = self.de_class_loss(pred, de_target)
+            self.log("train/de_classification_loss", total_loss)
+            self.log("train/de_classification_accuracy", accuracy)
         else:
+            main_loss = self.loss_fn(pred, target).nanmean()
+            self.log("train_loss", main_loss)
             total_loss = main_loss
 
         if self.ranking_loss is not None:
