@@ -6,7 +6,7 @@
 MODEL_DIR="competition"
 
 # experiment name
-DIR_NAME="kendall_lr_10e3"
+DIR_NAME="kendall_lr_1e4"
 
 # toml config path
 TOML_CONFIG="examples/starter.toml"
@@ -31,7 +31,7 @@ OUT_DIR=cell-eval-outdir/${DIR_NAME}
 
 # parallelization
 THREADS=8
-NUM_WORKERS=6
+NUM_WORKERS=4
 BATCH_SIZE=64
 
 # Exit on error
@@ -50,7 +50,7 @@ uv run state tx train \
   data.kwargs.control_pert=non-targeting \
   data.kwargs.perturbation_features_file=${PERT_FEATURES} \
   training.max_steps=140000 \
-  training.ckpt_every_n_steps=10000 \
+  training.ckpt_every_n_steps=5000 \
   training.val_freq=1000 \
   model=state_sm \
   model.kwargs.nb_decoder=false \
@@ -59,8 +59,10 @@ uv run state tx train \
   wandb.tags=[${DIR_NAME}] \
   output_dir=${MODEL_DIR} \
   name=${DIR_NAME} \
-  use_wandb=false \
+  use_wandb=true \
   training.lr=1e-3 \
+  training.batch_size=64 \
+  model.kwargs.init_from="/home/kendall/state/competition/kendall_lr_1e3/checkpoints/5000.ckpt" \
 
 # uv run scripts/prepare_holdout_ground_truth.py \
 #   --toml_config ${PREP_TOML_CONFIG} \
