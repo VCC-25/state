@@ -60,8 +60,8 @@ uv run state tx train \
   output_dir=${MODEL_DIR} \
   name=${DIR_NAME} \
   use_wandb=true \
-  training.lr=1e-3 \
-  training.batch_size=64 \
+  training.lr=1e-4 \
+  training.batch_size=32 \
   model.kwargs.init_from="/home/kendall/state/competition/kendall_lr_1e3/checkpoints/5000.ckpt" \
 
 # uv run scripts/prepare_holdout_ground_truth.py \
