@@ -1,5 +1,16 @@
 import argparse as ap
+import time
 
+# NEW: Memory Mapping and Prefetching imports (Dan)
+from cell_load.utils.data_utils import (
+    MemoryMappedArray, 
+    load_memory_mapped_dataset,
+    estimate_memory_usage
+)
+from cell_load.data_modules.perturbation_dataloader import (
+    EnhancedPerturbationDataLoader,
+    create_enhanced_loader
+)
 
 def add_arguments_predict(parser: ap.ArgumentParser):
     """
@@ -40,6 +51,35 @@ def add_arguments_predict(parser: ap.ArgumentParser):
         help="If set, only run prediction without evaluation metrics.",
     )
 
+    # NEW: Memory optimization arguments (Dan)
+    parser.add_argument(
+        "--enable_memory_mapping_predict",
+        action="store_true",
+        help="Enable memory mapping for prediction data loading"
+    )
+    parser.add_argument(
+        "--prediction_batch_size",
+        type=int,
+        default=None,
+        help="Override batch size for prediction (auto-optimized if not set)"
+    )
+    parser.add_argument(
+        "--prefetch_predictions",
+        action="store_true",
+        help="Enable prefetching for faster prediction"
+    )
+    parser.add_argument(
+        "--optimize_for_speed",
+        action="store_true",
+        help="Optimize prediction pipeline for maximum speed"
+    )
+    parser.add_argument(
+        "--cache_predictions",
+        action="store_true",
+        help="Cache predictions to disk for reuse"
+    )
+
+
 
 def run_tx_predict(args: ap.ArgumentParser):
     import logging
@@ -64,6 +104,93 @@ def run_tx_predict(args: ap.ArgumentParser):
 
     torch.multiprocessing.set_sharing_strategy("file_system")
 
+    # NEW: Enhanced prediction setup (Dan)
+    def setup_prediction_optimizations(args, device):
+        """Setup memory and speed optimizations for prediction"""
+        optimizations = {
+            'enable_memory_mapping': args.enable_memory_mapping_predict,
+            'prefetch_predictions': args.prefetch_predictions,
+            'optimize_for_speed': args.optimize_for_speed,
+            'cache_predictions': args.cache_predictions,
+        }
+        
+        # Auto-optimize batch size based on available memory
+        if args.prediction_batch_size is None:
+            if torch.cuda.is_available():
+                try:
+                    gpu_memory = torch.cuda.get_device_properties(device).total_memory
+                    if gpu_memory > 16 * 1024**3:  # >16GB
+                        optimizations['batch_size'] = 128
+                    elif gpu_memory > 8 * 1024**3:   # >8GB
+                        optimizations['batch_size'] = 64
+                    else:
+                        optimizations['batch_size'] = 32
+                except:
+                    optimizations['batch_size'] = 32
+            else:
+                try:
+                    import psutil
+                    available_memory = psutil.virtual_memory().available
+                    if available_memory > 32 * 1024**3:  # >32GB
+                        optimizations['batch_size'] = 64
+                    else:
+                        optimizations['batch_size'] = 32
+                except:
+                    optimizations['batch_size'] = 32
+        else:
+            optimizations['batch_size'] = args.prediction_batch_size
+        
+        logger.info("🚀 Prediction Optimizations:")
+        logger.info(f"   • Memory Mapping: {'✅' if optimizations['enable_memory_mapping'] else '❌'}")
+        logger.info(f"   • Prefetching: {'✅' if optimizations['prefetch_predictions'] else '❌'}")
+        logger.info(f"   • Speed Optimization: {'✅' if optimizations['optimize_for_speed'] else '❌'}")
+        logger.info(f"   • Batch Size: {optimizations['batch_size']}")
+        
+        return optimizations
+
+    # NEW: Cached prediction system (Dan)
+    class PredictionCache:
+        """Cache system for predictions"""
+        
+        def __init__(self, cache_dir: str, enabled: bool = True):
+            self.cache_dir = Path(cache_dir) if enabled else None
+            self.enabled = enabled
+            
+            if self.enabled and self.cache_dir:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        def get_cache_key(self, model_checkpoint: str, data_hash: str) -> str:
+            """Generate cache key for predictions"""
+            import hashlib
+            key_string = f"{model_checkpoint}_{data_hash}"
+            return hashlib.md5(key_string.encode()).hexdigest()
+        
+        def load_cached_predictions(self, cache_key: str):
+            """Load cached predictions if available"""
+            if not self.enabled or not self.cache_dir:
+                return None
+            
+            cache_file = self.cache_dir / f"{cache_key}.pkl"
+            if cache_file.exists():
+                logger.info(f"📂 Loading cached predictions: {cache_key}")
+                import pickle
+                with open(cache_file, 'rb') as f:
+                    return pickle.load(f)
+            
+            return None
+        
+        def save_predictions(self, cache_key: str, predictions_data: dict):
+            """Save predictions to cache"""
+            if not self.enabled or not self.cache_dir:
+                return
+            
+            cache_file = self.cache_dir / f"{cache_key}.pkl"
+            import pickle
+            with open(cache_file, 'wb') as f:
+                pickle.dump(predictions_data, f)
+            logger.info(f"💾 Cached predictions: {cache_key}")
+
+
     def run_test_time_finetune(model, dataloader, ft_epochs, control_pert, device):
         """
         Perform test-time fine-tuning on only control cells.
@@ -84,7 +211,9 @@ def run_tx_predict(args: ap.ArgumentParser):
                     continue
 
                 # Move batch data to device
-                batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
+                # OLD:batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
+                # NEW: (Dan)
+                batch = {k: (v.to(device, non_blocking=True) if torch.is_tensor(v) else v) for k, v in batch.items()}
 
                 optimizer.zero_grad()
                 loss = model.training_step(batch, batch_idx=0, padded=False)
@@ -99,6 +228,7 @@ def run_tx_predict(args: ap.ArgumentParser):
             logger.info(f"Finetune epoch {epoch + 1}/{ft_epochs}, mean loss: {mean_loss}")
         model.eval()
 
+       
     def load_config(cfg_path: str) -> dict:
         """Load config from the YAML file that was dumped during training."""
         if not os.path.exists(cfg_path):
@@ -181,6 +311,15 @@ def run_tx_predict(args: ap.ArgumentParser):
     model.eval()
     logger.info("Model loaded successfully.")
 
+    # NEW: Setup prediction optimizations - (Dan)
+    device = next(model.parameters()).device
+    optimizations = setup_prediction_optimizations(args, device)
+
+    # NEW: Setup prediction cache (Dan)
+    cache_dir = os.path.join(args.output_dir, "prediction_cache")
+    prediction_cache = PredictionCache(cache_dir, enabled=args.cache_predictions)
+
+
     # 4. Test-time fine-tuning if requested
     data_module.batch_size = 1
     if args.test_time_finetune > 0:
@@ -207,39 +346,74 @@ def run_tx_predict(args: ap.ArgumentParser):
     logger.info("Generating predictions on test set using manual loop...")
     device = next(model.parameters()).device
 
-    final_preds = np.empty((num_cells, output_dim), dtype=np.float32)
-    final_reals = np.empty((num_cells, output_dim), dtype=np.float32)
+    # NEW: Check for cached predictions (Dan)
+    data_hash = str(hash(str(cfg.get('data', {}))))
+    cache_key = prediction_cache.get_cache_key(checkpoint_path, data_hash)
 
-    store_raw_expression = (
-        data_module.embed_key is not None
-        and data_module.embed_key != "X_hvg"
-        and cfg["data"]["kwargs"]["output_space"] == "gene"
-    ) or (data_module.embed_key is not None and cfg["data"]["kwargs"]["output_space"] == "all")
+    cached_data = prediction_cache.load_cached_predictions(cache_key)
 
-    final_X_hvg = None
-    final_pert_cell_counts_preds = None
-    if store_raw_expression:
-        # Preallocate matrices of shape (num_cells, gene_dim) for decoded predictions.
-        if cfg["data"]["kwargs"]["output_space"] == "gene":
-            final_X_hvg = np.empty((num_cells, hvg_dim), dtype=np.float32)
-            final_pert_cell_counts_preds = np.empty((num_cells, hvg_dim), dtype=np.float32)
-        if cfg["data"]["kwargs"]["output_space"] == "all":
-            final_X_hvg = np.empty((num_cells, gene_dim), dtype=np.float32)
-            final_pert_cell_counts_preds = np.empty((num_cells, gene_dim), dtype=np.float32)
+    if cached_data is not None and not args.test_time_finetune:
+        logger.info("✅ Using cached predictions")
+        # Extract cached data
+        final_preds = cached_data['final_preds']
+        final_reals = cached_data['final_reals']
+        final_X_hvg = cached_data.get('final_X_hvg')
+        final_pert_cell_counts_preds = cached_data.get('final_pert_cell_counts_preds')
+        all_pert_names = cached_data['all_pert_names']
+        all_celltypes = cached_data['all_celltypes']
+        all_gem_groups = cached_data['all_gem_groups']
+        all_pert_barcodes = cached_data.get('all_pert_barcodes', [])
+        all_ctrl_barcodes = cached_data.get('all_ctrl_barcodes', [])
+        prediction_time = cached_data.get('prediction_time', 0)
+        
+    else:
+        final_preds = np.empty((num_cells, output_dim), dtype=np.float32)
+        final_reals = np.empty((num_cells, output_dim), dtype=np.float32)
 
+        store_raw_expression = (
+            data_module.embed_key is not None
+            and data_module.embed_key != "X_hvg"
+            and cfg["data"]["kwargs"]["output_space"] == "gene"
+        ) or (data_module.embed_key is not None and cfg["data"]["kwargs"]["output_space"] == "all")
+
+        final_X_hvg = None
+        final_pert_cell_counts_preds = None
+        if store_raw_expression:
+            # Preallocate matrices of shape (num_cells, gene_dim) for decoded predictions.
+            if cfg["data"]["kwargs"]["output_space"] == "gene":
+                final_X_hvg = np.empty((num_cells, hvg_dim), dtype=np.float32)
+                final_pert_cell_counts_preds = np.empty((num_cells, hvg_dim), dtype=np.float32)
+            if cfg["data"]["kwargs"]["output_space"] == "all":
+                final_X_hvg = np.empty((num_cells, gene_dim), dtype=np.float32)
+                final_pert_cell_counts_preds = np.empty((num_cells, gene_dim), dtype=np.float32)
+        
+
+        # Initialize aggregation variables directly
+        all_pert_names = []
+        all_celltypes = []
+        all_gem_groups = []
+        all_pert_barcodes = []
+        all_ctrl_barcodes = []
+    
     current_idx = 0
 
-    # Initialize aggregation variables directly
-    all_pert_names = []
-    all_celltypes = []
-    all_gem_groups = []
-    all_pert_barcodes = []
-    all_ctrl_barcodes = []
-
     with torch.no_grad():
+        # NEW: Add performance tracking  (Dan)
+        prediction_start_time = time.time()
+        batch_times = []
+
+        # NEW: Add speed optimizations (Dan)
+        if optimizations['optimize_for_speed']:
+            torch.backends.cudnn.benchmark = True
+            if hasattr(torch.backends.cudnn, 'allow_tf32'):
+                torch.backends.cudnn.allow_tf32 = True
+
         for batch_idx, batch in enumerate(tqdm(test_loader, desc="Predicting", unit="batch")):
+            batch_start = time.time()
             # Move each tensor in the batch to the model's device
-            batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+            #batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+            # MODIFY: Add non_blocking transfer (Dan)
+            batch = {k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
 
             # Get predictions
             batch_preds = model.predict_step(batch, batch_idx, padded=False)
@@ -290,7 +464,39 @@ def run_tx_predict(args: ap.ArgumentParser):
                 batch_gene_pred_np = batch_preds["pert_cell_counts_preds"].cpu().numpy().astype(np.float32)
                 final_pert_cell_counts_preds[current_idx - batch_size : current_idx, :] = batch_gene_pred_np
 
+            # NEW: Track performance (Dan)
+            batch_time = time.time() - batch_start
+            batch_times.append(batch_time)
+
     logger.info("Creating anndatas from predictions from manual loop...")
+
+    # NEW: Performance summary (Dan)
+    prediction_time = time.time() - prediction_start_time
+    avg_batch_time = np.mean(batch_times) if batch_times else 0
+    throughput = num_cells / prediction_time if prediction_time > 0 else 0
+
+    logger.info("📊 Enhanced Prediction Performance:")
+    logger.info(f"   • Total time: {prediction_time:.2f}s")
+    logger.info(f"   • Avg batch time: {avg_batch_time:.3f}s")
+    logger.info(f"   • Throughput: {throughput:.1f} samples/s")
+    logger.info(f"   • Total samples: {num_cells}")
+
+    # NEW: Cache predictions (Dan)
+    if args.cache_predictions:
+        cache_data = {
+            'final_preds': final_preds,
+            'final_reals': final_reals,
+            'final_X_hvg': final_X_hvg,
+            'final_pert_cell_counts_preds': final_pert_cell_counts_preds,
+            'all_pert_names': all_pert_names,
+            'all_celltypes': all_celltypes,
+            'all_gem_groups': all_gem_groups,
+            'all_pert_barcodes': all_pert_barcodes,
+            'all_ctrl_barcodes': all_ctrl_barcodes,
+            'prediction_time': prediction_time,
+            'throughput': throughput
+        }
+        prediction_cache.save_predictions(cache_key, cache_data)
 
     # Build pandas DataFrame for obs and var
     df_dict = {

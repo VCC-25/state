@@ -3749,7 +3749,12 @@ class CellEvalCallback(Callback):
                     output_dir=self.output_dir,
                     checkpoint=expected_checkpoint_path,                
                     profile="vcc",
-                    predict_only=False
+                    predict_only=False,
+                    prediction_batch_size=64,
+                    enable_memory_mapping_predict=True,
+                    prefetch_predictions=True,
+                    optimize_for_speed=True,
+                    cache_predictions=True
                 )
                 res_baseline, self.agg_baseline = run_tx_predict(args)
                 logger.info(f"Cell-eval baseline results: {self.agg_baseline}")

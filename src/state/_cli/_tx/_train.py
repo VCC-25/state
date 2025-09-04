@@ -6,6 +6,21 @@ from ...tx.callbacks import BatchSpeedMonitorCallback, ScheduledFinetuningCallba
 from ...tx.callbacks.cell_eval_callback import CellEvalCallback
 #from ._predict import run_tx_predict
 
+# NEW: Memory Mapping and Prefetching imports (Dan)
+from cell_load.utils.data_utils import (
+    MemoryMappedArray, 
+    create_memory_mapped_dataset,
+    estimate_memory_usage
+)
+from cell_load.data_modules.perturbation_dataloader import (
+    EnhancedPerturbationDataLoader,
+    create_enhanced_loader
+)
+from cell_load.mapping_strategies.batch import (
+    create_memory_mapped_batch_strategy,
+    AdaptiveMemoryMappedBatchStrategy
+)
+
 def add_arguments_train(parser: ap.ArgumentParser):
     # Allow remaining args to be passed through to Hydra
     parser.add_argument("hydra_overrides", nargs="*", help="Hydra configuration overrides (e.g., data.batch_size=32)")
@@ -26,7 +41,7 @@ def add_arguments_train(parser: ap.ArgumentParser):
                        default="32",
                        help="Mixed precision training")
 
-    # DAN: Cell-eval args
+    # Cell-eval args (Dan)
     parser.add_argument("--eval_during_training", action="store_true", 
                        help="Enables cell evaluation during training")
     parser.add_argument("--eval_every_n_steps", type=int, default=500,
@@ -38,6 +53,20 @@ def add_arguments_train(parser: ap.ArgumentParser):
     parser.add_argument("--eval_metrics", nargs='+', 
                        default=['mse', 'pearson', 'spearman'],
                        help="Evaluation metrics for cell-eval")
+    
+    # NEW: Distributed training specific memory optimization arguments (Dan)
+    parser.add_argument("--distributed_memory_mapping", action="store_true",
+                       help="Enable memory mapping optimized for distributed training")
+    parser.add_argument("--shared_mmap_cache", action="store_true",
+                       help="Use shared memory-mapped cache across processes")
+    parser.add_argument("--per_gpu_prefetch_factor", type=int, default=2,
+                       help="Prefetch factor per GPU in distributed training")
+    parser.add_argument("--distributed_batch_strategy", type=str,
+                       choices=["sequential", "random", "stratified", "distributed_adaptive"],
+                       default="distributed_adaptive",
+                       help="Batch strategy optimized for distributed training")
+    parser.add_argument("--sync_batch_loading", action="store_true",
+                       help="Synchronize batch loading across distributed processes")
 
 def run_tx_train(cfg: DictConfig):
     import json
@@ -122,6 +151,115 @@ def run_tx_train(cfg: DictConfig):
                 
         return accelerator, backend, plugins
     
+    # NEW: Memory optimization setup (Dan)
+    def setup_memory_optimizations(cfg, run_output_dir):
+        """Setup memory mapping and prefetching optimizations"""
+        logger = logging.getLogger(__name__)
+        
+        # Memory budget analysis
+        if cfg.get('memory_budget_gb'):
+            budget_bytes = cfg['memory_budget_gb'] * 1024 * 1024 * 1024
+            logger.info(f"💾 Memory budget: {cfg['memory_budget_gb']:.1f} GB")
+        else:
+            import psutil
+            available_memory = psutil.virtual_memory().available
+            budget_bytes = available_memory * 0.7  # Use 70% of available memory
+            logger.info(f"💾 Auto-detected memory budget: {budget_bytes / (1024**3):.1f} GB")
+        
+        # Setup cache directory for memory-mapped files
+        if cfg.get('enable_memory_mapping'):
+            if not cfg.get('mmap_cache_dir'):
+                cfg['mmap_cache_dir'] = join(run_output_dir, 'mmap_cache')
+            
+            os.makedirs(cfg['mmap_cache_dir'], exist_ok=True)
+            logger.info(f"📂 Memory-mapped cache: {cfg['mmap_cache_dir']}")
+        
+        # Log optimization settings
+        logger.info("🚀 Memory Optimizations:")
+        logger.info(f"   • Memory Mapping: {'✅' if cfg.get('enable_memory_mapping') else '❌'}")
+        logger.info(f"   • Prefetch Factor: {cfg.get('prefetch_factor', 0)}")
+        logger.info(f"   • Adaptive Prefetching: {'✅' if cfg.get('adaptive_prefetching') else '❌'}")
+        logger.info(f"   • Batch Strategy: {cfg.get('batch_strategy', 'default')}")
+        
+        return budget_bytes
+
+    # NEW: Enhanced DataModule creation (Dan)
+    def create_enhanced_datamodule(cfg, budget_bytes):
+        """Create enhanced DataModule with memory optimizations"""
+        logger = logging.getLogger(__name__)
+        
+        # Get base datamodule
+        base_datamodule = get_datamodule(cfg)
+        
+        # Apply memory optimizations if enabled
+        if cfg.get('enable_memory_mapping') or cfg.get('prefetch_factor', 0) > 0:
+            logger.info("🔧 Applying memory optimizations to DataModule...")
+            
+            # Create enhanced data loaders
+            enhanced_params = {
+                'prefetch_factor': cfg.get('prefetch_factor', 2),
+                'use_memory_mapping': cfg.get('enable_memory_mapping', False),
+                'mmap_cache_dir': cfg.get('mmap_cache_dir'),
+                'adaptive_prefetching': cfg.get('adaptive_prefetching', False),
+            }
+            
+            # Replace train dataloader
+            if hasattr(base_datamodule, 'train_dataloader'):
+                original_train_loader = base_datamodule.train_dataloader()
+                base_datamodule._enhanced_train_loader = create_enhanced_loader(
+                    dataset=getattr(original_train_loader, 'dataset', None),
+                    batch_size=getattr(original_train_loader, 'batch_size', 32),
+                    **enhanced_params
+                )
+                
+                # Override train_dataloader method
+                base_datamodule.train_dataloader = lambda: base_datamodule._enhanced_train_loader
+            
+            # Replace val dataloader
+            if hasattr(base_datamodule, 'val_dataloader'):
+                original_val_loader = base_datamodule.val_dataloader()
+                base_datamodule._enhanced_val_loader = create_enhanced_loader(
+                    dataset=getattr(original_val_loader, 'dataset', None),
+                    batch_size=getattr(original_val_loader, 'batch_size', 32),
+                    prefetch_factor=max(1, cfg.get('prefetch_factor', 2) // 2),  # Less prefetching for validation
+                    **{k: v for k, v in enhanced_params.items() if k != 'prefetch_factor'}
+                )
+                
+                # Override val_dataloader method
+                base_datamodule.val_dataloader = lambda: base_datamodule._enhanced_val_loader
+            
+            logger.info("✅ DataModule enhanced with memory optimizations")
+        
+        return base_datamodule
+
+    # NEW: Performance monitoring callback (Dan)
+    class MemoryOptimizationCallback(pl.Callback):
+        """Callback to monitor memory optimization performance"""
+        
+        def __init__(self, log_every_n_steps=100):
+            self.log_every_n_steps = log_every_n_steps
+            self.step_count = 0
+            
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            self.step_count += 1
+            
+            if self.step_count % self.log_every_n_steps == 0:
+                # Log memory usage
+                if torch.cuda.is_available():
+                    memory_allocated = torch.cuda.memory_allocated() / (1024**3)
+                    memory_reserved = torch.cuda.memory_reserved() / (1024**3)
+                    
+                    pl_module.log("memory/gpu_allocated_gb", memory_allocated)
+                    pl_module.log("memory/gpu_reserved_gb", memory_reserved)
+                
+                # Log batch processing time
+                if hasattr(trainer.datamodule, '_enhanced_train_loader'):
+                    loader = trainer.datamodule._enhanced_train_loader
+                    if hasattr(loader, 'batch_times') and loader.batch_times:
+                        avg_batch_time = sum(loader.batch_times[-10:]) / min(10, len(loader.batch_times))
+                        pl_module.log("performance/avg_batch_time", avg_batch_time)
+
+
     logger = logging.getLogger(__name__)
     torch.set_float32_matmul_precision("medium")
 
@@ -144,6 +282,13 @@ def run_tx_train(cfg: DictConfig):
 
     # Set random seeds
     pl.seed_everything(cfg["training"]["train_seed"])
+
+    # NEW: Setup hardware and memory optimizations (Dan)
+    accelerator, backend = setup_hardware_optimizations(cfg)
+    budget_bytes = setup_memory_optimizations(cfg, run_output_dir)
+
+    # NEW: Create enhanced datamodule (Dan)
+    datamodule = create_enhanced_datamodule(cfg, budget_bytes)
 
     # if the provided pert_col is drugname_drugconc, hard code the value of control pert
     # this is because it's surprisingly hard to specify a list of tuples in the config as a string
@@ -556,3 +701,12 @@ def run_tx_train(cfg: DictConfig):
     checkpoint_path = join(ckpt_callbacks[0].dirpath, "final.ckpt")
     if not exists(checkpoint_path):
         trainer.save_checkpoint(checkpoint_path)
+
+    # NEW: Performance summary
+    logger.info("📊 Training completed! Performance Summary:")
+    if cfg.get('enable_memory_mapping'):
+        logger.info("   • Memory mapping was enabled")
+    if cfg.get('prefetch_factor', 0) > 0:
+        logger.info(f"   • Prefetching factor: {cfg['prefetch_factor']}")
+    if cfg.get('adaptive_prefetching'):
+        logger.info("   • Adaptive prefetching was enabled")
