@@ -158,10 +158,10 @@ def run_tx_train(cfg: DictConfig):
         logger = logging.getLogger(__name__)
         
         optimizations = {
-            'enable_memory_mapping': cfg.get('enable_memory_mapping', False),
-            'enable_gradient_checkpointing': cfg.get('enable_gradient_checkpointing', False),
+            'enable_memory_mapping': cfg.get('enable_memory_mapping', True),
+            'enable_gradient_checkpointing': cfg.get('enable_gradient_checkpointing', True),
             'mixed_precision': cfg.get('mixed_precision', True),
-            'optimize_dataloading': cfg.get('optimize_dataloading', False),
+            'optimize_dataloading': cfg.get('optimize_dataloading', True),
         }
         
         # Memory estimation with fallback
@@ -391,7 +391,7 @@ def run_tx_train(cfg: DictConfig):
         cfg["data"]["name"],
         cfg["data"]["kwargs"],
         batch_size=cfg["training"]["batch_size"],
-        cell_sentence_len=sentence_len,
+        cell_sentence_len=sentence_len        
     )
 
     with open(join(run_output_dir, "data_module.torch"), "wb") as f:

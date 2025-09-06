@@ -509,65 +509,17 @@ def run_tx_predict(args: ap.ArgumentParser):
             batch_celltypes = [str(batch_preds["celltype_name"])] * batch_size if not isinstance(batch_preds["celltype_name"], list) else batch_preds["celltype_name"][:batch_size]
             batch_gem_groups = [str(batch_preds["batch"])] * batch_size if not isinstance(batch_preds["batch"], list) else [str(x) for x in batch_preds["batch"]][:batch_size]
             
-            #print(f"batch_pert_names: {batch_pert_names[:5]}... (len={len(batch_pert_names)})")
-            #print(f"batch_celltypes: {batch_celltypes[:5]}... (len={len(batch_celltypes)})")
-            #print(f"batch_gem_groups: {batch_gem_groups[:5]}... (len={len(batch_gem_groups)})")
             # Füge zur Gesamt-Liste hinzu
             all_pert_names.extend(batch_pert_names)
             all_celltypes.extend(batch_celltypes)
             all_gem_groups.extend(batch_gem_groups)
     
-            #print(f"Batch {batch_idx} - batch_size: {batch_size}, total collected: {len(all_pert_names)}   ")
-            #print(f"all_celltypes slen: {len(all_celltypes)}, all_gem_groups slen: {len(all_gem_groups)}")
             # Debug
-            logger.info(f"Batch {batch_idx}: Added {len(batch_pert_names)} entries, total now: {len(all_pert_names)}")
-            '''# KORREKTE Metadata-Sammlung mit bekannter batch_size
-            # Handle pert_name
-            if isinstance(batch_preds["pert_name"], list):
-                if len(batch_preds["pert_name"]) == batch_size:
-                    all_pert_names.extend(batch_preds["pert_name"])
-                else:
-                    all_pert_names.append([batch_preds["pert_name"][0]] * batch_size)
-            else:
-                all_pert_names.append([batch_preds["pert_name"]] * batch_size)
-
-            # Handle celltype_name
-            if isinstance(batch_preds["celltype_name"], list):
-                if len(batch_preds["celltype_name"]) == batch_size:
-                    all_celltypes.extend(batch_preds["celltype_name"])
-                else:
-                    all_celltypes.append([batch_preds["celltype_name"][0]] * batch_size)
-            else:
-                all_celltypes.append([batch_preds["celltype_name"]] * batch_size)
-
-            # Handle gem_group
-            if isinstance(batch_preds["batch"], list):
-                if len(batch_preds["batch"]) == batch_size:
-                    all_gem_groups.extend([str(x) for x in batch_preds["batch"]])
-                else:
-                    all_gem_groups.append([str(batch_preds["batch"][0])] * batch_size)
-            elif isinstance(batch_preds["batch"], torch.Tensor):
-                batch_values = batch_preds["batch"].cpu().numpy()
-                if len(batch_values) == batch_size:
-                    all_gem_groups.extend([str(x) for x in batch_values])
-                else:
-                    all_gem_groups.append([str(batch_values[0])] * batch_size)
-            else:
-                all_gem_groups.append([str(batch_preds["batch"])] * batch_size)
-
-            # Handle barcodes
-            if "pert_cell_barcode" in batch_preds:
-                if isinstance(batch_preds["pert_cell_barcode"], list):
-                    if len(batch_preds["pert_cell_barcode"]) == batch_size:
-                        all_pert_barcodes.extend(batch_preds["pert_cell_barcode"])
-                        all_ctrl_barcodes.extend(batch_preds["ctrl_cell_barcode"])
-                    else:
-                        all_pert_barcodes.append([batch_preds["pert_cell_barcode"][0]] * batch_size)
-                        all_ctrl_barcodes.append([batch_preds["ctrl_cell_barcode"][0]] * batch_size)
-                else:
-                    all_pert_barcodes.append([batch_preds["pert_cell_barcode"]] * batch_size)
-                    all_ctrl_barcodes.append([batch_preds["ctrl_cell_barcode"]] * batch_size)
-'''
+            #tqdm.write(
+            #        f"Batch {batch_idx}: Added {len(batch_pert_names)} entries, total now: {len(all_pert_names)}"
+            #    )
+            #logger.info(f"Batch {batch_idx}: Added {len(batch_pert_names)} entries, total now: {len(all_pert_names)}")
+            
             # JETZT die numpy arrays erstellen
             batch_pred_np = batch_preds["preds"].cpu().numpy().astype(np.float32)
             batch_real_np = batch_preds["pert_cell_emb"].cpu().numpy().astype(np.float32)
