@@ -153,35 +153,78 @@ def run_tx_train(cfg: DictConfig):
     
     # NEW: Memory optimization setup (Dan)
     def setup_memory_optimizations(cfg, run_output_dir):
-        """Setup memory mapping and prefetching optimizations"""
+        """Setup memory optimizations with graceful fallback"""
+        import logging
         logger = logging.getLogger(__name__)
         
-        # Memory budget analysis
-        if cfg.get('memory_budget_gb'):
-            budget_bytes = cfg['memory_budget_gb'] * 1024 * 1024 * 1024
-            logger.info(f"💾 Memory budget: {cfg['memory_budget_gb']:.1f} GB")
-        else:
+        optimizations = {
+            'enable_memory_mapping': cfg.get('enable_memory_mapping', False),
+            'enable_gradient_checkpointing': cfg.get('enable_gradient_checkpointing', False),
+            'mixed_precision': cfg.get('mixed_precision', True),
+            'optimize_dataloading': cfg.get('optimize_dataloading', False),
+        }
+        
+        # Memory estimation with fallback
+        try:
             import psutil
             available_memory = psutil.virtual_memory().available
-            budget_bytes = available_memory * 0.7  # Use 70% of available memory
-            logger.info(f"💾 Auto-detected memory budget: {budget_bytes / (1024**3):.1f} GB")
-        
-        # Setup cache directory for memory-mapped files
-        if cfg.get('enable_memory_mapping'):
-            if not cfg.get('mmap_cache_dir'):
-                cfg['mmap_cache_dir'] = join(run_output_dir, 'mmap_cache')
+            total_memory = psutil.virtual_memory().total
             
-            os.makedirs(cfg['mmap_cache_dir'], exist_ok=True)
-            logger.info(f"📂 Memory-mapped cache: {cfg['mmap_cache_dir']}")
+            logger.info(f"💾 System Memory: {total_memory / (1024**3):.1f}GB total, {available_memory / (1024**3):.1f}GB available")
+            
+            # Auto-optimize based on available memory
+            if available_memory > 32 * 1024**3:  # >32GB
+                optimizations['suggested_batch_size'] = 64
+                optimizations['num_workers'] = 8
+            elif available_memory > 16 * 1024**3:  # >16GB
+                optimizations['suggested_batch_size'] = 32
+                optimizations['num_workers'] = 4
+            else:  # <16GB
+                optimizations['suggested_batch_size'] = 16
+                optimizations['num_workers'] = 2
+                optimizations['enable_gradient_checkpointing'] = True
+                logger.warning("⚠️  Low memory detected, enabling gradient checkpointing")
+            
+            budget_bytes = int(available_memory * 0.7)  # Use 70% of available memory
+            
+        except ImportError:
+            logger.warning("⚠️  psutil not available, using conservative memory settings")
+            # Conservative fallback settings
+            optimizations['suggested_batch_size'] = 16
+            optimizations['num_workers'] = 2
+            optimizations['enable_gradient_checkpointing'] = True
+            budget_bytes = 8 * 1024**3  # Assume 8GB available
+            
+        except Exception as e:
+            logger.warning(f"⚠️  Memory detection failed: {e}, using conservative settings")
+            optimizations['suggested_batch_size'] = 16
+            optimizations['num_workers'] = 2
+            budget_bytes = 8 * 1024**3
         
-        # Log optimization settings
+        # GPU memory check with fallback
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory
+                logger.info(f"🎮 GPU Memory: {gpu_memory / (1024**3):.1f}GB")
+                
+                if gpu_memory > 16 * 1024**3:  # >16GB GPU
+                    optimizations['gpu_batch_multiplier'] = 2
+                elif gpu_memory < 8 * 1024**3:   # <8GB GPU
+                    optimizations['enable_gradient_checkpointing'] = True
+                    logger.warning("⚠️  Low GPU memory, enabling gradient checkpointing")
+        except Exception as e:
+            logger.warning(f"⚠️  GPU memory detection failed: {e}")
+        
         logger.info("🚀 Memory Optimizations:")
-        logger.info(f"   • Memory Mapping: {'✅' if cfg.get('enable_memory_mapping') else '❌'}")
-        logger.info(f"   • Prefetch Factor: {cfg.get('prefetch_factor', 0)}")
-        logger.info(f"   • Adaptive Prefetching: {'✅' if cfg.get('adaptive_prefetching') else '❌'}")
-        logger.info(f"   • Batch Strategy: {cfg.get('batch_strategy', 'default')}")
+        for key, value in optimizations.items():
+            if isinstance(value, bool):
+                logger.info(f"   • {key}: {'✅' if value else '❌'}")
+            else:
+                logger.info(f"   • {key}: {value}")
         
         return budget_bytes
+
 
     # NEW: Enhanced DataModule creation (Dan)
     def create_enhanced_datamodule(cfg, budget_bytes):
@@ -189,7 +232,10 @@ def run_tx_train(cfg: DictConfig):
         logger = logging.getLogger(__name__)
         
         # Get base datamodule
-        base_datamodule = get_datamodule(cfg)
+        base_datamodule = get_datamodule(cfg["data"]["name"],
+        cfg["data"]["kwargs"],
+        batch_size=cfg["training"]["batch_size"],
+        )
         
         # Apply memory optimizations if enabled
         if cfg.get('enable_memory_mapping') or cfg.get('prefetch_factor', 0) > 0:
@@ -284,7 +330,7 @@ def run_tx_train(cfg: DictConfig):
     pl.seed_everything(cfg["training"]["train_seed"])
 
     # NEW: Setup hardware and memory optimizations (Dan)
-    accelerator, backend = setup_hardware_optimizations(cfg)
+    #accelerator, backend = setup_hardware_optimizations(cfg)
     budget_bytes = setup_memory_optimizations(cfg, run_output_dir)
 
     # NEW: Create enhanced datamodule (Dan)

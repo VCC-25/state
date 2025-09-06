@@ -146,7 +146,62 @@ class CellEvalCallback(Callback):
 
         # Cell-eval Setup
         self._setup_cell_eval()
+
+    def create_anndata_from_predictions(self, predictions, metadata):
+        """Sichere AnnData-Erstellung mit korrekten Dimensionen"""
         
+        # Debug-Info
+        n_predictions = len(predictions)
+        n_metadata = len(metadata) if hasattr(metadata, '__len__') else metadata.shape[0]
+        
+        self.logger.info(f"🔍 Dimension Check:")
+        self.logger.info(f"   • Predictions: {n_predictions}")
+        self.logger.info(f"   • Metadata: {n_metadata}")
+        
+        # Stelle sicher, dass Dimensionen übereinstimmen
+        if n_predictions != n_metadata:
+            self.logger.warning(f"⚠️  Dimension mismatch detected!")
+            
+            # Option 1: Schneide Metadata ab
+            if n_metadata > n_predictions:
+                metadata = metadata[:n_predictions]
+                self.logger.info(f"✂️  Trimmed metadata to {n_predictions} rows")
+            
+            # Option 2: Fülle Predictions auf (falls nötig)
+            elif n_predictions > n_metadata:
+                # Das sollte nicht passieren, aber zur Sicherheit
+                predictions = predictions[:n_metadata]
+                self.logger.info(f"✂️  Trimmed predictions to {n_metadata} rows")
+        
+        # Erstelle AnnData mit korrekten Dimensionen
+        try:
+            import anndata as ad
+            import pandas as pd
+            
+            # Konvertiere Predictions zu numpy array
+            if hasattr(predictions, 'cpu'):
+                X = predictions.cpu().numpy()
+            else:
+                X = np.array(predictions)
+            
+            # Erstelle obs DataFrame mit korrekter Länge
+            if isinstance(metadata, pd.DataFrame):
+                obs = metadata.iloc[:X.shape[0]].copy()
+            else:
+                obs = pd.DataFrame(metadata[:X.shape[0]])
+            
+            # Validiere finale Dimensionen
+            assert X.shape[0] == obs.shape[0], f"Final mismatch: X={X.shape[0]}, obs={obs.shape[0]}"
+            
+            # Erstelle AnnData
+            adata = ad.AnnData(X=X, obs=obs)
+            
+            self.logger.info(f"✅ AnnData created: {adata.shape}")
+            return adata
+            
+        except Exception as e:
+            self.logger.error(f"❌ AnnData creation failed: {e}")
+            raise    
     def _setup_cell_eval(self):
         """Initializes cell-eval integration"""
         try:
@@ -3724,12 +3779,22 @@ class CellEvalCallback(Callback):
         
         # Create arguments for run_tx_predict
         class MockArgs:
-            def __init__(self, output_dir, checkpoint, profile="minimal", predict_only=False):
+            def __init__(self, output_dir, checkpoint, profile="minimal", predict_only=False,
+                        prediction_batch_size=64,
+                        enable_memory_mapping_predict=True,
+                        prefetch_predictions=True,
+                        optimize_for_speed=True,
+                        cache_predictions=True):
                 self.output_dir = output_dir
                 self.checkpoint = os.path.basename(checkpoint)  # only filename
                 self.test_time_finetune = 0  # No fine-tuning during training
                 self.profile = profile
                 self.predict_only = predict_only
+                self.prediction_batch_size=prediction_batch_size,
+                self.enable_memory_mapping_predict=enable_memory_mapping_predict,
+                self.prefetch_predictions=prefetch_predictions,
+                self.optimize_for_speed=optimize_for_speed,
+                self.cache_predictions=cache_predictions
         
         # Move checkpoint to the expected directory
         expected_checkpoint_dir = os.path.join(self.output_dir, "checkpoints")

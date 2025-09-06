@@ -1,4 +1,5 @@
 import argparse as ap
+from pathlib import Path
 import time
 
 # NEW: Memory Mapping and Prefetching imports (Dan)
@@ -190,7 +191,90 @@ def run_tx_predict(args: ap.ArgumentParser):
                 pickle.dump(predictions_data, f)
             logger.info(f"💾 Cached predictions: {cache_key}")
 
+        #Korrigiere Batch-Sammlung
+        def predict_step(self, batch, batch_idx):
+            """Prediction step mit korrekter Metadata-Sammlung"""
+            
+            with torch.no_grad():
+                # Model prediction
+                predictions = self.model(batch)
+                
+                # Sammle Batch-Metadata korrekt
+                batch_metadata = self._extract_batch_metadata(batch)
+                
+                # Store mit korrekter Indexierung
+                self.prediction_results.append({
+                    'predictions': predictions,
+                    'metadata': batch_metadata,
+                    'batch_idx': batch_idx,
+                    'batch_size': len(batch_metadata)  # Wichtig für Debugging
+                })
+            
+            return predictions
 
+        def _extract_batch_metadata(self, batch):
+            """Extrahiere Metadata pro Sample im Batch"""
+            metadata_list = []
+            
+            # Je nach Batch-Format
+            if 'obs' in batch:
+                # Direkte obs-Daten
+                obs_data = batch['obs']
+                if isinstance(obs_data, list):
+                    metadata_list = obs_data
+                else:
+                    # Tensor zu Liste
+                    metadata_list = [obs_data[i] for i in range(obs_data.shape[0])]
+            
+            elif 'metadata' in batch:
+                metadata_list = batch['metadata']
+            
+            else:
+                # Fallback: Erstelle minimale Metadata
+                batch_size = batch['X'].shape[0] if 'X' in batch else len(batch)
+                metadata_list = [{'sample_id': f'sample_{i}'} for i in range(batch_size)]
+            
+            return metadata_list
+
+        def on_predict_end(self):
+            """Sammle alle Predictions mit korrekter Dimensionierung"""
+            
+            all_predictions = []
+            all_metadata = []
+            
+            total_samples = 0
+            
+            for result in self.prediction_results:
+                predictions = result['predictions']
+                metadata = result['metadata']
+                
+                # Debug pro Batch
+                batch_size = predictions.shape[0]
+                metadata_size = len(metadata)
+                
+                self.logger.debug(f"Batch {result['batch_idx']}: pred={batch_size}, meta={metadata_size}")
+                
+                # Stelle Konsistenz sicher
+                min_size = min(batch_size, metadata_size)
+                
+                all_predictions.append(predictions[:min_size])
+                all_metadata.extend(metadata[:min_size])
+                
+                total_samples += min_size
+            
+            # Concatenate alle Predictions
+            final_predictions = torch.cat(all_predictions, dim=0)
+            
+            self.logger.info(f"📊 Final collection:")
+            self.logger.info(f"   • Predictions shape: {final_predictions.shape}")
+            self.logger.info(f"   • Metadata length: {len(all_metadata)}")
+            self.logger.info(f"   • Total samples: {total_samples}")
+            
+            # Erstelle AnnData mit korrekten Dimensionen
+            return self.create_anndata_from_predictions(final_predictions, all_metadata)
+    
+
+   
     def run_test_time_finetune(model, dataloader, ft_epochs, control_pert, device):
         """
         Perform test-time fine-tuning on only control cells.
@@ -227,6 +311,8 @@ def run_tx_predict(args: ap.ArgumentParser):
             mean_loss = np.mean(epoch_losses) if epoch_losses else float("nan")
             logger.info(f"Finetune epoch {epoch + 1}/{ft_epochs}, mean loss: {mean_loss}")
         model.eval()
+
+    
 
        
     def load_config(cfg_path: str) -> dict:
@@ -309,16 +395,16 @@ def run_tx_predict(args: ap.ArgumentParser):
 
     model = ModelClass.load_from_checkpoint(checkpoint_path, **model_init_kwargs)
     model.eval()
-    logger.info("Model loaded successfully.")
 
-    # NEW: Setup prediction optimizations - (Dan)
+    # NEW: Setup prediction optimizations - ADD AFTER model.eval()
     device = next(model.parameters()).device
     optimizations = setup_prediction_optimizations(args, device)
 
-    # NEW: Setup prediction cache (Dan)
+    # NEW: Setup prediction cache
     cache_dir = os.path.join(args.output_dir, "prediction_cache")
     prediction_cache = PredictionCache(cache_dir, enabled=args.cache_predictions)
 
+    logger.info("Model loaded successfully.")
 
     # 4. Test-time fine-tuning if requested
     data_module.batch_size = 1
@@ -330,6 +416,7 @@ def run_tx_predict(args: ap.ArgumentParser):
         )
         logger.info("Test-time fine-tuning complete.")
 
+   
     # 5. Run inference on test set
     data_module.setup(stage="test")
     test_loader = data_module.test_dataloader()
@@ -388,12 +475,12 @@ def run_tx_predict(args: ap.ArgumentParser):
                 final_pert_cell_counts_preds = np.empty((num_cells, gene_dim), dtype=np.float32)
         
 
-        # Initialize aggregation variables directly
-        all_pert_names = []
-        all_celltypes = []
-        all_gem_groups = []
-        all_pert_barcodes = []
-        all_ctrl_barcodes = []
+    # Initialize aggregation variables directly
+    all_pert_names = []
+    all_celltypes = []
+    all_gem_groups = []
+    all_pert_barcodes = []
+    all_ctrl_barcodes = []
     
     current_idx = 0
 
@@ -410,46 +497,82 @@ def run_tx_predict(args: ap.ArgumentParser):
 
         for batch_idx, batch in enumerate(tqdm(test_loader, desc="Predicting", unit="batch")):
             batch_start = time.time()
-            # Move each tensor in the batch to the model's device
-            #batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
-            # MODIFY: Add non_blocking transfer (Dan)
             batch = {k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
 
             # Get predictions
             batch_preds = model.predict_step(batch, batch_idx, padded=False)
-
-            # Extract metadata and data directly from batch_preds
+            
+            # GET BATCH SIZE FIRST!
+            batch_size = batch_preds["preds"].shape[0]  
+            
+            batch_pert_names = [str(batch_preds["pert_name"])] * batch_size if not isinstance(batch_preds["pert_name"], list) else batch_preds["pert_name"][:batch_size]
+            batch_celltypes = [str(batch_preds["celltype_name"])] * batch_size if not isinstance(batch_preds["celltype_name"], list) else batch_preds["celltype_name"][:batch_size]
+            batch_gem_groups = [str(batch_preds["batch"])] * batch_size if not isinstance(batch_preds["batch"], list) else [str(x) for x in batch_preds["batch"]][:batch_size]
+            
+            #print(f"batch_pert_names: {batch_pert_names[:5]}... (len={len(batch_pert_names)})")
+            #print(f"batch_celltypes: {batch_celltypes[:5]}... (len={len(batch_celltypes)})")
+            #print(f"batch_gem_groups: {batch_gem_groups[:5]}... (len={len(batch_gem_groups)})")
+            # Füge zur Gesamt-Liste hinzu
+            all_pert_names.extend(batch_pert_names)
+            all_celltypes.extend(batch_celltypes)
+            all_gem_groups.extend(batch_gem_groups)
+    
+            #print(f"Batch {batch_idx} - batch_size: {batch_size}, total collected: {len(all_pert_names)}   ")
+            #print(f"all_celltypes slen: {len(all_celltypes)}, all_gem_groups slen: {len(all_gem_groups)}")
+            # Debug
+            logger.info(f"Batch {batch_idx}: Added {len(batch_pert_names)} entries, total now: {len(all_pert_names)}")
+            '''# KORREKTE Metadata-Sammlung mit bekannter batch_size
             # Handle pert_name
             if isinstance(batch_preds["pert_name"], list):
-                all_pert_names.extend(batch_preds["pert_name"])
-            else:
-                all_pert_names.append(batch_preds["pert_name"])
-
-            if "pert_cell_barcode" in batch_preds:
-                if isinstance(batch_preds["pert_cell_barcode"], list):
-                    all_pert_barcodes.extend(batch_preds["pert_cell_barcode"])
-                    all_ctrl_barcodes.extend(batch_preds["ctrl_cell_barcode"])
+                if len(batch_preds["pert_name"]) == batch_size:
+                    all_pert_names.extend(batch_preds["pert_name"])
                 else:
-                    all_pert_barcodes.append(batch_preds["pert_cell_barcode"])
-                    all_ctrl_barcodes.append(batch_preds["ctrl_cell_barcode"])
+                    all_pert_names.append([batch_preds["pert_name"][0]] * batch_size)
+            else:
+                all_pert_names.append([batch_preds["pert_name"]] * batch_size)
 
             # Handle celltype_name
             if isinstance(batch_preds["celltype_name"], list):
-                all_celltypes.extend(batch_preds["celltype_name"])
+                if len(batch_preds["celltype_name"]) == batch_size:
+                    all_celltypes.extend(batch_preds["celltype_name"])
+                else:
+                    all_celltypes.append([batch_preds["celltype_name"][0]] * batch_size)
             else:
-                all_celltypes.append(batch_preds["celltype_name"])
+                all_celltypes.append([batch_preds["celltype_name"]] * batch_size)
 
             # Handle gem_group
             if isinstance(batch_preds["batch"], list):
-                all_gem_groups.extend([str(x) for x in batch_preds["batch"]])
+                if len(batch_preds["batch"]) == batch_size:
+                    all_gem_groups.extend([str(x) for x in batch_preds["batch"]])
+                else:
+                    all_gem_groups.append([str(batch_preds["batch"][0])] * batch_size)
             elif isinstance(batch_preds["batch"], torch.Tensor):
-                all_gem_groups.extend([str(x) for x in batch_preds["batch"].cpu().numpy()])
+                batch_values = batch_preds["batch"].cpu().numpy()
+                if len(batch_values) == batch_size:
+                    all_gem_groups.extend([str(x) for x in batch_values])
+                else:
+                    all_gem_groups.append([str(batch_values[0])] * batch_size)
             else:
-                all_gem_groups.append(str(batch_preds["batch"]))
+                all_gem_groups.append([str(batch_preds["batch"])] * batch_size)
 
+            # Handle barcodes
+            if "pert_cell_barcode" in batch_preds:
+                if isinstance(batch_preds["pert_cell_barcode"], list):
+                    if len(batch_preds["pert_cell_barcode"]) == batch_size:
+                        all_pert_barcodes.extend(batch_preds["pert_cell_barcode"])
+                        all_ctrl_barcodes.extend(batch_preds["ctrl_cell_barcode"])
+                    else:
+                        all_pert_barcodes.append([batch_preds["pert_cell_barcode"][0]] * batch_size)
+                        all_ctrl_barcodes.append([batch_preds["ctrl_cell_barcode"][0]] * batch_size)
+                else:
+                    all_pert_barcodes.append([batch_preds["pert_cell_barcode"]] * batch_size)
+                    all_ctrl_barcodes.append([batch_preds["ctrl_cell_barcode"]] * batch_size)
+'''
+            # JETZT die numpy arrays erstellen
             batch_pred_np = batch_preds["preds"].cpu().numpy().astype(np.float32)
             batch_real_np = batch_preds["pert_cell_emb"].cpu().numpy().astype(np.float32)
-            batch_size = batch_pred_np.shape[0]
+            
+            # Store predictions
             final_preds[current_idx : current_idx + batch_size, :] = batch_pred_np
             final_reals[current_idx : current_idx + batch_size, :] = batch_real_np
             current_idx += batch_size
@@ -464,7 +587,7 @@ def run_tx_predict(args: ap.ArgumentParser):
                 batch_gene_pred_np = batch_preds["pert_cell_counts_preds"].cpu().numpy().astype(np.float32)
                 final_pert_cell_counts_preds[current_idx - batch_size : current_idx, :] = batch_gene_pred_np
 
-            # NEW: Track performance (Dan)
+            # Track performance
             batch_time = time.time() - batch_start
             batch_times.append(batch_time)
 

@@ -6,7 +6,7 @@ from .perturb_mean import PerturbMeanPerturbationModel
 from .old_neural_ot import OldNeuralOTPerturbationModel
 from .state_transition import StateTransitionPerturbationModel
 from .pseudobulk import PseudobulkPerturbationModel
-from .state_transition_delta import DeltaStateTransitionPerturbationModel # new Model from Dan
+#from .state_transition_delta import DeltaStateTransitionPerturbationModel # new Model from Dan
 
 __all__ = [
     "PerturbationModel",
@@ -17,5 +17,5 @@ __all__ = [
     "OldNeuralOTPerturbationModel",
     "DecoderOnlyPerturbationModel",
     "PseudobulkPerturbationModel",
-    "DeltaStateTransitionPerturbationModel"
+    #"DeltaStateTransitionPerturbationModel"
 ]
