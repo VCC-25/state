@@ -95,7 +95,7 @@ def run_tx_predict(args: ap.ArgumentParser):
     import yaml
 
     # Cell-eval for metrics computation
-    from cell_eval import MetricsEvaluator
+    from cell_eval import OptimizedMetricsEvaluator
     from cell_eval.utils import split_anndata_on_celltype
     from cell_load.data_modules import PerturbationDataModule
     from tqdm import tqdm
@@ -649,7 +649,7 @@ def run_tx_predict(args: ap.ArgumentParser):
             real_ct = ct_split_real[ct]
             pred_ct = ct_split_pred[ct]
 
-            evaluator = MetricsEvaluator(
+            evaluator = OptimizedMetricsEvaluator(
                 adata_pred=pred_ct,
                 adata_real=real_ct,
                 control_pert=control_pert,

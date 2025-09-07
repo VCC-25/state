@@ -206,7 +206,7 @@ class CellEvalCallback(Callback):
         """Initializes cell-eval integration"""
         try:
             # Dynamic import of cell-eval
-            from cell_eval import MetricsEvaluator
+            from cell_eval import OptimizedMetricsEvaluator
             #from cell_eval.data import build_random_anndata, downsample_cells
 
             self.cell_eval_available = True
