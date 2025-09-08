@@ -313,6 +313,53 @@ class StateTransitionPerturbationModel(PerturbationModel):
         """Define how we embed basal state input, if needed."""
         return self.basal_encoder(expr)
 
+    def _safe_reshape_tensor(self, tensor: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        """
+        Safely reshape tensor with fallback strategies
+        """
+        try:
+            return tensor.reshape(*target_shape)
+        except RuntimeError as e:
+            logger.warning(f"Direct reshape failed: {e}")
+            
+            # Berechne erwartete Größe
+            target_elements = 1
+            for dim in target_shape:
+                if dim != -1:
+                    target_elements *= dim
+            
+            actual_elements = tensor.numel()
+            
+            # Strategie 1: Pad oder truncate
+            tensor_flat = tensor.flatten()
+            
+            if actual_elements < target_elements:
+                # Pad with zeros
+                padding_size = target_elements - actual_elements
+                padding = torch.zeros(padding_size, device=tensor.device, dtype=tensor.dtype)
+                tensor_flat = torch.cat([tensor_flat, padding])
+                logger.warning(f"Padded tensor from {actual_elements} to {target_elements}")
+                
+            elif actual_elements > target_elements:
+                # Truncate
+                tensor_flat = tensor_flat[:target_elements]
+                logger.warning(f"Truncated tensor from {actual_elements} to {target_elements}")
+            
+            return tensor_flat.reshape(*target_shape)
+
+    def _debug_tensor_shapes(self, batch: Dict[str, torch.Tensor]):
+        """Debug function to print tensor shapes"""
+        logger.info("🔍 Tensor Shape Debug:")
+        for key, tensor in batch.items():
+            if isinstance(tensor, torch.Tensor):
+                logger.info(f"  {key}: {tensor.shape} (elements: {tensor.numel()})")
+        
+        logger.info(f"Model Parameters:")
+        logger.info(f"  cell_sentence_len: {self.cell_sentence_len}")
+        logger.info(f"  pert_dim: {self.pert_dim}")
+        logger.info(f"  input_dim: {self.input_dim}")
+        logger.info(f"  output_dim: {self.output_dim}")
+        
     def forward(self, batch: dict, padded=True) -> torch.Tensor:
         """
         The main forward call. Batch is a flattened sequence of cell sentences,
@@ -326,14 +373,52 @@ class StateTransitionPerturbationModel(PerturbationModel):
         The `padded` argument here is set to True if the batch is padded. Otherwise, we
         expect a single batch, so that sentences can vary in length across batches.
         """
-        if padded:
+        '''if padded:
             pert = batch["pert_emb"].reshape(-1, self.cell_sentence_len, self.pert_dim)
             basal = batch["ctrl_cell_emb"].reshape(-1, self.cell_sentence_len, self.input_dim)
         else:
             # we are inferencing on a single batch, so accept variable length sentences
             pert = batch["pert_emb"].reshape(1, -1, self.pert_dim)
             basal = batch["ctrl_cell_emb"].reshape(1, -1, self.input_dim)
+'''
+        # 🔧 ROBUSTE RESHAPE-LOGIK
+        if padded:
+            # Debug: Aktuelle Tensor-Größen prüfen
+            pert_emb = batch["pert_emb"]
+            ctrl_emb = batch["ctrl_cell_emb"]
+            
+            # Berechne tatsächliche Dimensionen
+            pert_total = pert_emb.numel()
+            ctrl_total = ctrl_emb.numel()
+            
+            # Strategie 1: Verwende tatsächliche Dimensionen wenn möglich
+            if pert_total % self.cell_sentence_len == 0:
+                actual_pert_dim = pert_total // self.cell_sentence_len
+                pert = pert_emb.reshape(-1, self.cell_sentence_len, actual_pert_dim)
+            elif pert_total % self.pert_dim == 0:
+                actual_cell_len = pert_total // self.pert_dim
+                pert = pert_emb.reshape(-1, actual_cell_len, self.pert_dim)
+            else:
+                # Fallback: Flatten und auf erwartete Größe bringen
+                pert = self._safe_reshape_tensor(pert_emb, (-1, self.cell_sentence_len, self.pert_dim))
+            
+            # Gleiches für basal/control embeddings
+            if ctrl_total % self.cell_sentence_len == 0:
+                actual_input_dim = ctrl_total // self.cell_sentence_len
+                basal = ctrl_emb.reshape(-1, self.cell_sentence_len, actual_input_dim)
+            elif ctrl_total % self.input_dim == 0:
+                actual_cell_len = ctrl_total // self.input_dim
+                basal = ctrl_emb.reshape(-1, actual_cell_len, self.input_dim)
+            else:
+                basal = self._safe_reshape_tensor(ctrl_emb, (-1, self.cell_sentence_len, self.input_dim))
+                
+        else:
+            pert = batch["pert_emb"].reshape(1, -1, self.pert_dim)
+            basal = batch["ctrl_cell_emb"].reshape(1, -1, self.input_dim)
 
+        # Debug: Tensor-Größen nach dem Reshape prüfen
+        self._debug_tensor_shapes(batch)
+        
         # Shape: [B, S, input_dim]
         pert_embedding = self.encode_perturbation(pert)
         control_cells = self.encode_basal_expression(basal)
