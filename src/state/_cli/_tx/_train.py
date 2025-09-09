@@ -1,6 +1,12 @@
 import argparse as ap
 import os
 
+import time
+import threading
+from queue import Queue
+import psutil
+import torch
+
 from omegaconf import DictConfig, OmegaConf
 from ...tx.callbacks import BatchSpeedMonitorCallback, ScheduledFinetuningCallback
 from ...tx.callbacks.cell_eval_callback import CellEvalCallback
@@ -67,6 +73,363 @@ def add_arguments_train(parser: ap.ArgumentParser):
                        help="Batch strategy optimized for distributed training")
     parser.add_argument("--sync_batch_loading", action="store_true",
                        help="Synchronize batch loading across distributed processes")
+
+    parser.add_argument(
+            "--prefetch-predictions", 
+            action="store_true", 
+            default=True,
+            help="Enable prefetching for faster GPU utilization"
+        )
+        
+    parser.add_argument(
+        "--optimize-dataloader-memory", 
+        action="store_true", 
+        default=True,
+        help="Optimize DataLoader for better memory usage"
+    )
+    
+    parser.add_argument(
+        "--force-single-worker", 
+        action="store_true", 
+        default=False,
+        help="Force single-worker DataLoader to avoid shared memory issues"
+    )
+    
+    parser.add_argument(
+        "--max-dataloader-workers", 
+        type=int, 
+        default=4,
+        help="Maximum number of DataLoader workers"
+    )
+
+class PrefetchDataLoader:
+    """
+    DataLoader-Wrapper für asynchrones GPU-Prefetching mit Shared Memory Optimierung
+    """
+    def __init__(self, loader, device, logger=None, optimize_memory=True):
+        self.loader = loader
+        self.device = device
+        self.logger = logger
+        self.stream = torch.cuda.Stream() if torch.cuda.is_available() else None
+        self.optimize_memory = optimize_memory
+        
+        # Shared Memory Optimierung
+        if self.optimize_memory:
+            self._optimize_dataloader_memory()
+        
+        if self.logger:
+            self.logger.info(f"🚀 PrefetchDataLoader initialized for device: {device}")
+            if self.stream:
+                self.logger.info("✅ CUDA stream created for async prefetching")
+    
+    def _optimize_dataloader_memory(self):
+        """Optimiert DataLoader für bessere Memory-Nutzung"""
+        if hasattr(self.loader, 'num_workers') and self.loader.num_workers > 0:
+            # Reduziere num_workers falls zu hoch
+            available_memory = psutil.virtual_memory().available / (1024**3)  # GB
+            
+            if available_memory < 8:  # < 8GB RAM
+                if self.loader.num_workers > 2:
+                    if self.logger:
+                        self.logger.warning(f"⚠️ Low memory detected ({available_memory:.1f}GB), reducing num_workers from {self.loader.num_workers} to 2")
+                    self.loader.num_workers = 2
+            elif available_memory < 16:  # < 16GB RAM
+                if self.loader.num_workers > 4:
+                    if self.logger:
+                        self.logger.warning(f"⚠️ Medium memory detected ({available_memory:.1f}GB), reducing num_workers from {self.loader.num_workers} to 4")
+                    self.loader.num_workers = 4
+            
+            # Aktiviere Pin Memory falls verfügbar
+            if torch.cuda.is_available() and not getattr(self.loader, 'pin_memory', False):
+                self.loader.pin_memory = True
+                if self.logger:
+                    self.logger.info("📌 Enabled pin_memory for faster GPU transfers")
+    
+    def __len__(self):
+        return len(self.loader)
+    
+    def __iter__(self):
+        batch_iter = iter(self.loader)
+        preloaded_batch = None
+        
+        # Lade ersten Batch
+        try:
+            preloaded_batch = next(batch_iter)
+            preloaded_batch = self._transfer_to_device(preloaded_batch)
+        except StopIteration:
+            return
+        
+        # Iteriere durch restliche Batches
+        for batch in batch_iter:
+            # Starte GPU-Transfer für nächsten Batch asynchron
+            if self.stream and torch.cuda.is_available():
+                with torch.cuda.stream(self.stream):
+                    next_batch = self._transfer_to_device(batch)
+            else:
+                next_batch = self._transfer_to_device(batch)
+            
+            # Gib aktuellen Batch zurück (während nächster lädt)
+            yield preloaded_batch
+            
+            # Warte auf Stream-Completion falls CUDA verwendet wird
+            if self.stream and torch.cuda.is_available():
+                torch.cuda.current_stream().wait_stream(self.stream)
+            
+            preloaded_batch = next_batch
+        
+        # Gib letzten Batch zurück
+        if preloaded_batch is not None:
+            yield preloaded_batch
+    
+    def _transfer_to_device(self, batch):
+        """Transferiert Batch-Daten auf das Zielgerät"""
+        if isinstance(batch, dict):
+            return {k: (v.to(self.device, non_blocking=True) 
+                       if torch.is_tensor(v) else v) 
+                   for k, v in batch.items()}
+        elif isinstance(batch, (list, tuple)):
+            return type(batch)(v.to(self.device, non_blocking=True) 
+                             if torch.is_tensor(v) else v 
+                             for v in batch)
+        elif torch.is_tensor(batch):
+            return batch.to(self.device, non_blocking=True)
+        else:
+            return batch
+
+
+class SharedMemoryOptimizedDataLoader:
+    """
+    DataLoader-Wrapper speziell für Shared Memory Probleme
+    """
+    def __init__(self, loader, device, logger=None):
+        self.original_loader = loader
+        self.device = device
+        self.logger = logger
+        
+        # Erstelle optimierten DataLoader
+        self.loader = self._create_optimized_loader()
+        
+        if self.logger:
+            self.logger.info("🔧 SharedMemoryOptimizedDataLoader created")
+    
+    def _create_optimized_loader(self):
+        """Erstellt einen memory-optimierten DataLoader"""
+        from torch.utils.data import DataLoader
+        
+        # Kopiere alle Attribute vom Original-Loader
+        dataset = self.original_loader.dataset
+        batch_size = getattr(self.original_loader, 'batch_size', 1)
+        shuffle = getattr(self.original_loader, 'shuffle', False)
+        sampler = getattr(self.original_loader, 'sampler', None)
+        batch_sampler = getattr(self.original_loader, 'batch_sampler', None)
+        collate_fn = getattr(self.original_loader, 'collate_fn', None)
+        drop_last = getattr(self.original_loader, 'drop_last', False)
+        timeout = getattr(self.original_loader, 'timeout', 0)
+        worker_init_fn = getattr(self.original_loader, 'worker_init_fn', None)
+        
+        # Memory-optimierte Einstellungen
+        available_memory = psutil.virtual_memory().available / (1024**3)  # GB
+        
+        if available_memory < 8:  # < 8GB
+            num_workers = 0  # Kein Multiprocessing
+            pin_memory = False
+            persistent_workers = False
+        elif available_memory < 16:  # < 16GB
+            num_workers = min(2, getattr(self.original_loader, 'num_workers', 4))
+            pin_memory = torch.cuda.is_available()
+            persistent_workers = False
+        else:  # >= 16GB
+            num_workers = min(4, getattr(self.original_loader, 'num_workers', 8))
+            pin_memory = torch.cuda.is_available()
+            persistent_workers = True
+        
+        if self.logger:
+            self.logger.info(f"🔧 Optimized DataLoader settings:")
+            self.logger.info(f"   • num_workers: {num_workers} (was: {getattr(self.original_loader, 'num_workers', 'unknown')})")
+            self.logger.info(f"   • pin_memory: {pin_memory}")
+            self.logger.info(f"   • persistent_workers: {persistent_workers}")
+            self.logger.info(f"   • Available RAM: {available_memory:.1f}GB")
+        
+        return DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            timeout=timeout,
+            worker_init_fn=worker_init_fn,
+            persistent_workers=persistent_workers,
+            prefetch_factor=2 if num_workers > 0 else None,
+        )
+    
+    def __len__(self):
+        return len(self.loader)
+    
+    def __iter__(self):
+        return iter(self.loader)
+
+
+def optimize_dataloader_for_memory(loader, logger=None):
+    """
+    Optimiert einen DataLoader für bessere Memory-Nutzung
+    """
+    if logger:
+        logger.info("🔧 Optimizing DataLoader for memory usage...")
+    
+    # Prüfe verfügbaren Speicher
+    try:
+        available_memory = psutil.virtual_memory().available / (1024**3)  # GB
+        total_memory = psutil.virtual_memory().total / (1024**3)  # GB
+        
+        if logger:
+            logger.info(f"💾 System Memory: {total_memory:.1f}GB total, {available_memory:.1f}GB available")
+        
+        # Entscheide basierend auf verfügbarem Speicher
+        if available_memory < 4:  # Sehr wenig Speicher
+            if logger:
+                logger.warning("⚠️ Very low memory detected - using single-threaded DataLoader")
+            return SharedMemoryOptimizedDataLoader(loader, None, logger)
+        
+        elif available_memory < 8:  # Wenig Speicher
+            if logger:
+                logger.warning("⚠️ Low memory detected - using memory-optimized DataLoader")
+            return SharedMemoryOptimizedDataLoader(loader, None, logger)
+        
+        else:  # Genug Speicher für normale Optimierung
+            if logger:
+                logger.info("✅ Sufficient memory - using standard optimizations")
+            return loader
+            
+    except Exception as e:
+        if logger:
+            logger.warning(f"⚠️ Memory detection failed: {e} - using conservative settings")
+        return SharedMemoryOptimizedDataLoader(loader, None, logger)
+
+# NEW: DataLoader Memory-Optimierung (Dan)
+def optimize_datamodule_loaders(data_module, cfg, logger):
+    """Optimiert DataModule DataLoader für bessere Memory-Nutzung"""
+    
+    # Prüfe ob Optimierung gewünscht ist
+    optimize_memory = cfg.get("optimize_dataloader_memory", True)
+    force_single_worker = cfg.get("force_single_worker", False)
+    max_workers = cfg.get("max_dataloader_workers", 4)
+    
+    if not optimize_memory and not force_single_worker:
+        logger.info("ℹ️ DataLoader optimization disabled")
+        return data_module
+    
+    logger.info("🔧 Optimizing DataModule DataLoaders...")
+    
+    # Optimiere Train DataLoader
+    if hasattr(data_module, 'train_dataloader'):
+        original_train_method = data_module.train_dataloader
+        
+        def optimized_train_dataloader():
+            loader = original_train_method()
+            
+            if force_single_worker:
+                loader.num_workers = 0
+                loader.pin_memory = False
+                logger.info("🔧 Train DataLoader: Forced single-worker mode")
+            else:
+                # Memory-basierte Optimierung
+                available_memory = psutil.virtual_memory().available / (1024**3)
+                
+                if available_memory < 8:
+                    loader.num_workers = 0
+                    loader.pin_memory = False
+                    logger.info(f"🔧 Train DataLoader: Single-worker (low memory: {available_memory:.1f}GB)")
+                else:
+                    loader.num_workers = min(max_workers, loader.num_workers)
+                    loader.pin_memory = torch.cuda.is_available()
+                    logger.info(f"🔧 Train DataLoader: {loader.num_workers} workers, pin_memory={loader.pin_memory}")
+            
+            return loader
+        
+        data_module.train_dataloader = optimized_train_dataloader
+    
+    # Optimiere Val DataLoader
+    if hasattr(data_module, 'val_dataloader'):
+        original_val_method = data_module.val_dataloader
+        
+        def optimized_val_dataloader():
+            loader = original_val_method()
+            
+            if force_single_worker:
+                loader.num_workers = 0
+                loader.pin_memory = False
+                logger.info("🔧 Val DataLoader: Forced single-worker mode")
+            else:
+                # Validation braucht weniger Workers
+                available_memory = psutil.virtual_memory().available / (1024**3)
+                
+                if available_memory < 8:
+                    loader.num_workers = 0
+                    loader.pin_memory = False
+                else:
+                    loader.num_workers = min(2, max_workers // 2)  # Weniger Workers für Validation
+                    loader.pin_memory = torch.cuda.is_available()
+                
+                logger.info(f"🔧 Val DataLoader: {loader.num_workers} workers, pin_memory={loader.pin_memory}")
+            
+            return loader
+        
+        data_module.val_dataloader = optimized_val_dataloader
+    
+    logger.info("✅ DataModule DataLoaders optimized")
+    return data_module
+
+def diagnose_shared_memory_issues(logger):
+    """Diagnostiziert potentielle Shared Memory Probleme"""
+    logger.info("🔍 Diagnosing shared memory configuration...")
+    
+    try:
+        import subprocess
+        
+        # Prüfe /dev/shm Größe
+        result = subprocess.run(['df', '-h', '/dev/shm'], capture_output=True, text=True)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            if len(lines) > 1:
+                shm_info = lines[1].split()
+                shm_size = shm_info[1] if len(shm_info) > 1 else "unknown"
+                shm_used = shm_info[2] if len(shm_info) > 2 else "unknown"
+                shm_available = shm_info[3] if len(shm_info) > 3 else "unknown"
+                
+                logger.info(f"📊 Shared Memory (/dev/shm):")
+                logger.info(f"   • Size: {shm_size}")
+                logger.info(f"   • Used: {shm_used}")
+                logger.info(f"   • Available: {shm_available}")
+                
+                # Warnung bei wenig Shared Memory
+                if 'M' in shm_available and int(shm_available.replace('M', '')) < 512:
+                    logger.warning("⚠️ Low shared memory available - consider using single-worker DataLoader")
+                elif 'K' in shm_available:
+                    logger.warning("⚠️ Very low shared memory available - forcing single-worker DataLoader")
+                    return True  # Force single worker
+        
+        # Prüfe System-Limits
+        try:
+            with open('/proc/sys/kernel/shmmax', 'r') as f:
+                shmmax = int(f.read().strip())
+                logger.info(f"📊 System shmmax: {shmmax / (1024**3):.2f}GB")
+                
+            with open('/proc/sys/kernel/shmall', 'r') as f:
+                shmall = int(f.read().strip())
+                page_size = 4096  # Typical page size
+                logger.info(f"📊 System shmall: {(shmall * page_size) / (1024**3):.2f}GB")
+                
+        except Exception as e:
+            logger.info(f"ℹ️ Could not read system shared memory limits: {e}")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Shared memory diagnosis failed: {e}")
+    
+    return False  # Don't force single worker
 
 def run_tx_train(cfg: DictConfig):
     import json
@@ -400,8 +763,41 @@ def run_tx_train(cfg: DictConfig):
 
     data_module.setup(stage="fit")
     dl = data_module.train_dataloader()
-    print("num_workers:", dl.num_workers)
-    print("batch size:", dl.batch_size)
+
+    logger.info("🔧 Starting DataLoader optimization...")
+
+    force_single_worker_due_to_shm = diagnose_shared_memory_issues(logger)
+    if force_single_worker_due_to_shm:
+        cfg["force_single_worker"] = True
+        logger.warning("⚠️ Forcing single-worker DataLoader due to shared memory constraints")
+
+    # NEW: DataLoader-Optimierung für Shared Memory Probleme (Dan)
+    data_module = optimize_datamodule_loaders(data_module, cfg, logger)
+
+    #print("num_workers:", dl.num_workers)
+    #print("batch size:", dl.batch_size)
+
+    #Test DataLoader (optional, for Debugging)
+    try:
+        logger.info("🧪 Testing optimized DataLoader...")
+        dl = data_module.train_dataloader()
+        logger.info(f"✅ Train DataLoader test successful:")
+        logger.info(f"   • num_workers: {dl.num_workers}")
+        logger.info(f"   • batch_size: {dl.batch_size}")
+        logger.info(f"   • pin_memory: {getattr(dl, 'pin_memory', False)}")
+        
+        # Test einen Batch
+        test_batch = next(iter(dl))
+        logger.info(f"   • Test batch loaded successfully")
+        del test_batch  # Cleanup
+        
+    except Exception as e:
+        logger.error(f"❌ DataLoader test failed: {e}")
+        logger.warning("🔧 Falling back to single-worker DataLoader...")
+        cfg["force_single_worker"] = True
+        data_module = optimize_datamodule_loaders(data_module, cfg, logger)
+
+    logger.info("✅ DataLoader optimization complete")
 
     var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
     if cfg["data"]["kwargs"]["output_space"] == "gene":
@@ -638,6 +1034,8 @@ def run_tx_train(cfg: DictConfig):
 
     
     logger.info("Starting trainer fit.")
+
+
 
     # if a checkpoint does not exist, start with the provided checkpoint
     # this is mainly used for pretrain -> finetune workflows
