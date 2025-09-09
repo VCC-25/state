@@ -161,7 +161,8 @@ class OldNeuralOTPerturbationModel(PerturbationModel):
         decoder_loss = None
         if self.gene_decoder is not None and "pert_cell_counts" in batch:
             # Train decoder to map latent predictions to gene space
-            with torch.no_grad():
+            #with torch.no_grad():
+            with torch.inference_mode(): #faster (Dan)
                 latent_preds = pred.detach()  # Detach to prevent gradient flow back to main model
 
             pert_cell_counts_preds = self.gene_decoder(latent_preds)

@@ -373,16 +373,16 @@ class StateTransitionPerturbationModel(PerturbationModel):
         The `padded` argument here is set to True if the batch is padded. Otherwise, we
         expect a single batch, so that sentences can vary in length across batches.
         """
-        '''if padded:
+        if padded:
             pert = batch["pert_emb"].reshape(-1, self.cell_sentence_len, self.pert_dim)
             basal = batch["ctrl_cell_emb"].reshape(-1, self.cell_sentence_len, self.input_dim)
         else:
             # we are inferencing on a single batch, so accept variable length sentences
             pert = batch["pert_emb"].reshape(1, -1, self.pert_dim)
             basal = batch["ctrl_cell_emb"].reshape(1, -1, self.input_dim)
-'''
+
         # 🔧 ROBUSTE RESHAPE-LOGIK
-        if padded:
+        '''if padded:
             # Debug: Aktuelle Tensor-Größen prüfen
             pert_emb = batch["pert_emb"]
             ctrl_emb = batch["ctrl_cell_emb"]
@@ -415,10 +415,10 @@ class StateTransitionPerturbationModel(PerturbationModel):
         else:
             pert = batch["pert_emb"].reshape(1, -1, self.pert_dim)
             basal = batch["ctrl_cell_emb"].reshape(1, -1, self.input_dim)
-
+'''
         # Debug: Tensor-Größen nach dem Reshape prüfen
-        self._debug_tensor_shapes(batch)
-        
+        #self._debug_tensor_shapes(batch)
+
         # Shape: [B, S, input_dim]
         pert_embedding = self.encode_perturbation(pert)
         control_cells = self.encode_basal_expression(basal)

@@ -130,7 +130,8 @@ class EMACallback(L.Callback):
     def on_before_optimizer_step(self, trainer: L.Trainer, pl_module: L.LightningModule, optimizer):
         # Check if EMA is enabled via the config flag.
         if pl_module.cfg.model.get("ema", False):
-            with torch.no_grad():
+            #with torch.no_grad():
+            with torch.inference_mode(): #faster (Dan)
                 for param in pl_module.parameters():
                     if param.grad is None:
                         continue

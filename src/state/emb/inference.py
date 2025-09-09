@@ -134,7 +134,8 @@ class Inference:
         return self.model.gene_embedding_layer(protein_embeds)
 
     def encode(self, dataloader, rda=None):
-        with torch.no_grad():
+       #with torch.no_grad():
+        with torch.inference_mode(): #faster (Dan)
             device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
             precision = get_precision_config(device_type=device_type)
             with torch.autocast(device_type=device_type, dtype=precision):

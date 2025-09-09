@@ -1,6 +1,9 @@
 import argparse as ap
 from pathlib import Path
 import time
+import time
+from scipy.sparse import csr_matrix, issparse
+#from typing import Optional, Dict, Any, List, Tuple
 
 # NEW: Memory Mapping and Prefetching imports (Dan)
 from cell_load.utils.data_utils import (
@@ -13,7 +16,7 @@ from cell_load.data_modules.perturbation_dataloader import (
     create_enhanced_loader
 )
 
-def add_arguments_predict(parser: ap.ArgumentParser):
+def add_arguments_predict(parser: ap.ArgumentParser) -> None:
     """
     CLI for evaluation using cell-eval metrics.
     """
@@ -95,7 +98,7 @@ def run_tx_predict(args: ap.ArgumentParser):
     import yaml
 
     # Cell-eval for metrics computation
-    from cell_eval import OptimizedMetricsEvaluator
+    from cell_eval import MetricsEvaluator
     from cell_eval.utils import split_anndata_on_celltype
     from cell_load.data_modules import PerturbationDataModule
     from tqdm import tqdm
@@ -195,7 +198,8 @@ def run_tx_predict(args: ap.ArgumentParser):
         def predict_step(self, batch, batch_idx):
             """Prediction step mit korrekter Metadata-Sammlung"""
             
-            with torch.no_grad():
+            #with torch.no_grad():
+            with torch.inference_mode(): #faster (Dan)
                 # Model prediction
                 predictions = self.model(batch)
                 
@@ -274,7 +278,109 @@ def run_tx_predict(args: ap.ArgumentParser):
             return self.create_anndata_from_predictions(final_predictions, all_metadata)
     
 
-   
+    def create_anndata_optimized(X_data, obs_data, var_names=None, embed_key=None, embed_data=None):
+        """
+        Optimierte AnnData-Erstellung mit automatischer Sparse-Matrix-Erkennung
+        
+        Args:
+            X_data: NumPy array oder bereits sparse matrix
+            obs_data: Dictionary oder DataFrame für observations
+            var_names: Liste der Variablen-Namen (Gene)
+            embed_key: Key für embedding data in obsm
+            embed_data: Embedding data für obsm
+        
+        Returns:
+            anndata.AnnData: Optimiertes AnnData Objekt
+        """
+        start_time = time.time()
+        
+        # 1. Prüfe ob Daten bereits sparse sind
+        if not issparse(X_data):
+            # Berechne Sparsity
+            total_elements = X_data.size
+            non_zero_elements = np.count_nonzero(X_data)
+            sparsity = 1 - (non_zero_elements / total_elements)
+            
+            logger.info(f"📊 Data sparsity: {sparsity:.1%} ({non_zero_elements:,} / {total_elements:,} non-zero)")
+            
+            # Konvertiere zu sparse wenn sinnvoll (>70% Nullen)
+            if sparsity > 0.7:
+                logger.info("🗜️ Converting to sparse matrix...")
+                X_data = csr_matrix(X_data)
+                logger.info(f"✅ Sparse conversion complete. Memory saved: ~{sparsity*100:.0f}%")
+            else:
+                logger.info("📈 Keeping dense matrix (low sparsity)")
+        else:
+            logger.info("✅ Data already in sparse format")
+        
+        # 2. Effiziente obs DataFrame-Erstellung
+        if isinstance(obs_data, dict):
+            # Konvertiere Listen zu pandas kategorisch wenn möglich
+            obs_dict_optimized = {}
+            for key, values in obs_data.items():
+                if isinstance(values, list):
+                    # Prüfe ob kategorisch sinnvoll ist
+                    unique_values = len(set(values))
+                    total_values = len(values)
+                    
+                    if unique_values < total_values * 0.5:  # <50% unique values
+                        obs_dict_optimized[key] = pd.Categorical(values)
+                        logger.info(f"🏷️ Converted '{key}' to categorical ({unique_values} unique values)")
+                    else:
+                        obs_dict_optimized[key] = values
+                else:
+                    obs_dict_optimized[key] = values
+            
+            obs = pd.DataFrame(obs_dict_optimized)
+        else:
+            obs = obs_data
+        
+        # 3. var DataFrame erstellen
+        if var_names:
+            var = pd.DataFrame(index=var_names)
+        else:
+            var = None
+        
+        # 4. AnnData erstellen
+        logger.info("🔧 Creating AnnData object...")
+        if var is not None:
+            adata = anndata.AnnData(X=X_data, obs=obs, var=var)
+        else:
+            adata = anndata.AnnData(X=X_data, obs=obs)
+        
+        # 5. Embedding hinzufügen falls vorhanden
+        if embed_key and embed_data is not None:
+            adata.obsm[embed_key] = embed_data
+            logger.info(f"📍 Added embeddings to obsm['{embed_key}']")
+        
+        creation_time = time.time() - start_time
+        logger.info(f"✅ AnnData created in {creation_time:.2f}s. Shape: {adata.shape}")
+        
+        return adata
+    
+    def create_anndata_ultra_sparse(X_data, obs_data, var_names=None, sparsity_threshold=0.95):
+        """Ultra-sparse Optimierung für sehr sparse Daten (>95% Nullen)"""        
+        
+        if not issparse(X_data):
+            sparsity = 1 - (np.count_nonzero(X_data) / X_data.size)
+            
+            if sparsity > sparsity_threshold:
+                logger.info(f"🔥 Ultra-sparse mode: {sparsity:.2%} sparsity")
+                
+                # Verwende int8 für sehr kleine Werte wenn möglich
+                if X_data.max() < 127 and X_data.min() >= 0:
+                    X_data = X_data.astype(np.int8)
+                    logger.info("📉 Converted to int8 for additional memory savings")
+                
+                X_data = csr_matrix(X_data)
+                
+                # Eliminiere explizite Nullen
+                X_data.eliminate_zeros()
+                logger.info("🗑️ Eliminated explicit zeros")
+        
+        return create_anndata_optimized(X_data, obs_data, var_names)
+
+
     def run_test_time_finetune(model, dataloader, ft_epochs, control_pert, device):
         """
         Perform test-time fine-tuning on only control cells.
@@ -454,8 +560,10 @@ def run_tx_predict(args: ap.ArgumentParser):
         prediction_time = cached_data.get('prediction_time', 0)
         
     else:
-        final_preds = np.empty((num_cells, output_dim), dtype=np.float32)
-        final_reals = np.empty((num_cells, output_dim), dtype=np.float32)
+        #final_preds = np.empty((num_cells, output_dim), dtype=np.float32)
+        #final_reals = np.empty((num_cells, output_dim), dtype=np.float32)
+        final_preds = torch.empty((num_cells, output_dim), dtype=torch.float32, device=device)
+        final_reals = torch.empty((num_cells, output_dim), dtype=torch.float32, device=device)
 
         store_raw_expression = (
             data_module.embed_key is not None
@@ -468,11 +576,15 @@ def run_tx_predict(args: ap.ArgumentParser):
         if store_raw_expression:
             # Preallocate matrices of shape (num_cells, gene_dim) for decoded predictions.
             if cfg["data"]["kwargs"]["output_space"] == "gene":
-                final_X_hvg = np.empty((num_cells, hvg_dim), dtype=np.float32)
-                final_pert_cell_counts_preds = np.empty((num_cells, hvg_dim), dtype=np.float32)
+                #final_X_hvg = np.empty((num_cells, hvg_dim), dtype=np.float32)
+                #final_pert_cell_counts_preds = np.empty((num_cells, hvg_dim), dtype=np.float32)
+                final_X_hvg = torch.empty((num_cells, hvg_dim), dtype=torch.float32, device=device)
+                final_pert_cell_counts_preds = torch.empty((num_cells, hvg_dim), dtype=torch.float32, device=device)                
             if cfg["data"]["kwargs"]["output_space"] == "all":
-                final_X_hvg = np.empty((num_cells, gene_dim), dtype=np.float32)
-                final_pert_cell_counts_preds = np.empty((num_cells, gene_dim), dtype=np.float32)
+                #final_X_hvg = np.empty((num_cells, gene_dim), dtype=np.float32)
+                #final_pert_cell_counts_preds = np.empty((num_cells, gene_dim), dtype=np.float32)
+                final_X_hvg = torch.empty((num_cells, gene_dim), dtype=torch.float32, device=device)
+                final_pert_cell_counts_preds = torch.empty((num_cells, gene_dim), dtype=torch.float32, device=device)
         
 
     # Initialize aggregation variables directly
@@ -484,7 +596,8 @@ def run_tx_predict(args: ap.ArgumentParser):
     
     current_idx = 0
 
-    with torch.no_grad():
+    #with torch.no_grad():
+    with torch.inference_mode(): #faster (Dan)        
         # NEW: Add performance tracking  (Dan)
         prediction_start_time = time.time()
         batch_times = []
@@ -500,7 +613,8 @@ def run_tx_predict(args: ap.ArgumentParser):
             batch = {k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
 
             # Get predictions
-            batch_preds = model.predict_step(batch, batch_idx, padded=False)
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                batch_preds = model.predict_step(batch, batch_idx, padded=False)
             
             # GET BATCH SIZE FIRST!
             batch_size = batch_preds["preds"].shape[0]  
@@ -521,23 +635,29 @@ def run_tx_predict(args: ap.ArgumentParser):
             #logger.info(f"Batch {batch_idx}: Added {len(batch_pert_names)} entries, total now: {len(all_pert_names)}")
             
             # JETZT die numpy arrays erstellen
-            batch_pred_np = batch_preds["preds"].cpu().numpy().astype(np.float32)
-            batch_real_np = batch_preds["pert_cell_emb"].cpu().numpy().astype(np.float32)
+            #batch_pred_np = batch_preds["preds"].cpu().numpy().astype(np.float32)
+            #batch_real_np = batch_preds["pert_cell_emb"].cpu().numpy().astype(np.float32)
             
             # Store predictions
-            final_preds[current_idx : current_idx + batch_size, :] = batch_pred_np
-            final_reals[current_idx : current_idx + batch_size, :] = batch_real_np
+            #final_preds[current_idx : current_idx + batch_size, :] = batch_pred_np
+            #final_reals[current_idx : current_idx + batch_size, :] = batch_real_np
+
+            final_preds[current_idx : current_idx + batch_size, :] = batch_preds["preds"]
+            final_reals[current_idx : current_idx + batch_size, :] = batch_preds["pert_cell_emb"]
             current_idx += batch_size
 
             # Handle X_hvg for HVG space ground truth
             if final_X_hvg is not None:
-                batch_real_gene_np = batch_preds["pert_cell_counts"].cpu().numpy().astype(np.float32)
-                final_X_hvg[current_idx - batch_size : current_idx, :] = batch_real_gene_np
+                #batch_real_gene_np = batch_preds["pert_cell_counts"].cpu().numpy().astype(np.float32)
+                #final_X_hvg[current_idx - batch_size : current_idx, :] = batch_real_gene_np
+                final_X_hvg[current_idx : current_idx + batch_size, :] = batch_preds["pert_cell_counts"]
+
 
             # Handle decoded gene predictions if available
             if final_pert_cell_counts_preds is not None:
-                batch_gene_pred_np = batch_preds["pert_cell_counts_preds"].cpu().numpy().astype(np.float32)
-                final_pert_cell_counts_preds[current_idx - batch_size : current_idx, :] = batch_gene_pred_np
+                #batch_gene_pred_np = batch_preds["pert_cell_counts_preds"].cpu().numpy().astype(np.float32)
+                #final_pert_cell_counts_preds[current_idx - batch_size : current_idx, :] = batch_gene_pred_np
+                final_pert_cell_counts_preds[current_idx : current_idx + batch_size, :] = batch_preds["pert_cell_counts_preds"]
 
             # Track performance
             batch_time = time.time() - batch_start
@@ -589,6 +709,25 @@ def run_tx_predict(args: ap.ArgumentParser):
     gene_names = var_dims["gene_names"]
     var = pd.DataFrame({"gene_names": gene_names})
 
+    logger.info("Converting tensors to numpy for AnnData creation...")
+    final_preds_np = final_preds.cpu().numpy()
+    final_reals_np = final_reals.cpu().numpy()
+
+    # Konvertiere auch die anderen Tensors falls vorhanden
+    if final_X_hvg is not None:
+        final_X_hvg_np = final_X_hvg.cpu().numpy()
+        final_pert_cell_counts_preds_np = final_pert_cell_counts_preds.cpu().numpy()
+        # GPU-Memory freigeben
+        del final_X_hvg, final_pert_cell_counts_preds
+    else:
+        final_X_hvg_np = None
+        final_pert_cell_counts_preds_np = None
+
+    # GPU-Memory freigeben
+    del final_preds, final_reals
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    ''''
     if final_X_hvg is not None:
         if len(gene_names) != final_pert_cell_counts_preds.shape[1]:
             gene_names = np.load(
@@ -602,8 +741,8 @@ def run_tx_predict(args: ap.ArgumentParser):
         adata_real = anndata.AnnData(X=final_X_hvg, obs=obs, var=var)
 
         # add the embedding predictions
-        adata_pred.obsm[data_module.embed_key] = final_preds
-        adata_real.obsm[data_module.embed_key] = final_reals
+        adata_pred.obsm[data_module.embed_key] = final_preds_np
+        adata_real.obsm[data_module.embed_key] = final_reals_np
         logger.info(f"Added predicted embeddings to adata.obsm['{data_module.embed_key}']")
     else:
         # if len(gene_names) != final_preds.shape[1]:
@@ -614,11 +753,47 @@ def run_tx_predict(args: ap.ArgumentParser):
 
         # Create adata for predictions - model was trained on gene expression space already
         # adata_pred = anndata.AnnData(X=final_preds, obs=obs, var=var)
-        adata_pred = anndata.AnnData(X=final_preds, obs=obs)
+        adata_pred = anndata.AnnData(X=final_preds_np, obs=obs)
         # Create adata for real - using the true gene expression values
         # adata_real = anndata.AnnData(X=final_reals, obs=obs, var=var)
-        adata_real = anndata.AnnData(X=final_reals, obs=obs)
+        adata_real = anndata.AnnData(X=final_reals_np, obs=obs)
+'''
+    logger.info("🚀 Creating optimized AnnData objects...")
 
+    if final_X_hvg_np is not None:
+        # Erstelle var DataFrame für Gene
+        var_names = data_module.gene_names if hasattr(data_module, 'gene_names') else None
+        
+        # Create adata for predictions - using the decoded gene expression values
+        adata_pred = create_anndata_ultra_sparse(
+            X_data=final_pert_cell_counts_preds_np,
+            obs_data=obs,
+            var_names=var_names,
+            embed_key=data_module.embed_key,
+            embed_data=final_preds_np
+        )
+        
+        # Create adata for real - using the true gene expression values  
+        adata_real = create_anndata_ultra_sparse(
+            X_data=final_X_hvg_np,
+            obs_data=obs,
+            var_names=var_names,
+            embed_key=data_module.embed_key,
+            embed_data=final_reals_np
+        )
+        
+    else:
+        # Create adata for predictions - model was trained on gene expression space already
+        adata_pred = create_anndata_ultra_sparse(
+            X_data=final_preds_np,
+            obs_data=obs
+        )
+        
+        # Create adata for real - using the true gene expression values
+        adata_real = create_anndata_ultra_sparse(
+            X_data=final_reals_np,
+            obs_data=obs
+        )
     # Save the AnnData objects DAN Maybe not saving during eval_train?
     results_dir = os.path.join(args.output_dir, "eval_" + os.path.basename(args.checkpoint))
     os.makedirs(results_dir, exist_ok=True)
@@ -630,6 +805,22 @@ def run_tx_predict(args: ap.ArgumentParser):
 
     logger.info(f"Saved adata_pred to {adata_pred_path}")
     logger.info(f"Saved adata_real to {adata_real_path}")
+
+
+    # Memory cleanup nach AnnData-Erstellung
+    logger.info("🧹 Cleaning up memory...")
+    del final_preds_np, final_reals_np
+    if final_X_hvg_np is not None:
+        del final_X_hvg_np, final_pert_cell_counts_preds_np
+
+    # Force garbage collection
+    import gc
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
+    logger.info("✅ Memory cleanup complete")
 
     if not args.predict_only:
         # 6. Compute metrics using cell-eval
@@ -649,7 +840,7 @@ def run_tx_predict(args: ap.ArgumentParser):
             real_ct = ct_split_real[ct]
             pred_ct = ct_split_pred[ct]
 
-            evaluator = OptimizedMetricsEvaluator(
+            evaluator = MetricsEvaluator(
                 adata_pred=pred_ct,
                 adata_real=real_ct,
                 control_pert=control_pert,
@@ -659,7 +850,8 @@ def run_tx_predict(args: ap.ArgumentParser):
                 pdex_kwargs=pdex_kwargs,
                 batch_size=2048,                
             )
-
+            
+            
             # Buchi add results
             (results, agg_results) = evaluator.compute(
                 profile=args.profile,

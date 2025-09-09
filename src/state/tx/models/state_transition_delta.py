@@ -181,7 +181,8 @@ class DeltaStateTransitionPerturbationModel(StateTransitionPerturbationModel):
             delta_hat = gate * delta_hat
 
         if self.delta_scale_mode == "auto" and self.training:
-            with torch.no_grad():
+            #with torch.no_grad():
+            with torch.inference_mode(): #faster (Dan)
                 batch_std = delta_hat.std().clamp(min=1e-6)
                 self.delta_running_std = (1 - self.delta_momentum) * self.delta_running_std + self.delta_momentum * batch_std
             delta_hat = delta_hat / (self.delta_running_std + 1e-6)
@@ -243,7 +244,8 @@ class DeltaStateTransitionPerturbationModel(StateTransitionPerturbationModel):
 
             # Optional Norm-Clipping (pro Batch über gesamten Delta-Vektor)
             if self.clip_delta_norm is not None:
-                with torch.no_grad():
+                #with torch.no_grad():
+                with torch.inference_mode(): #faster (Dan)
                     norms = torch.norm(delta_hat.view(delta_hat.size(0), -1), dim=1)
                     scale = torch.clamp(self.clip_delta_norm / (norms + 1e-6), max=1.0)
                 delta_hat.mul_(scale.view(-1, 1, 1))

@@ -93,7 +93,8 @@ class ContextMeanPerturbationModel(PerturbationModel):
         # Initialize dictionary to accumulate sum and count for each cell type.
         celltype_sums = defaultdict(lambda: {"sum": torch.zeros(self.output_dim), "count": 0})
 
-        with torch.no_grad():
+        #with torch.no_grad():
+        with torch.inference_mode(): #faster (Dan)
             for batch in train_loader:
                 # Select the proper expression space
                 if (self.embed_key and self.embed_key != "X_hvg" and self.output_space == "gene") or (

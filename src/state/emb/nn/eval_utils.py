@@ -35,7 +35,8 @@ def evaluate_intrinsic(model, cfg, device=None, logger=print, adata=None):
         for batch in tqdm(
             dataloader, desc=f"Perturbation Embeddings: {cfg['validations']['perturbation']['dataset_name']}"
         ):
-            with torch.no_grad():
+            #with torch.no_grad():
+            with torch.inference_mode(): #faster (Dan)
                 _, _, _, emb, _ = model._compute_embedding_for_batch(batch)
                 all_embs.append(emb.cpu().detach().numpy())
         all_embs = np.concatenate(all_embs, axis=0)
@@ -203,7 +204,8 @@ def train_and_select(model, loaders, epochs, lr, device):
         if val_loader is not None:
             model.eval()
             total_val = 0.0
-            with torch.no_grad():
+            #with torch.no_grad():
+            with torch.inference_mode(): #faster (Dan)
                 for X, y in val_loader:
                     X, y = X.to(device), y.to(device)
                     total_val += loss_fn(model(X), y).item() * X.size(0)
@@ -235,7 +237,8 @@ def evaluate_model(model, loader, device):
     all_labels = []
     total_loss = 0.0
 
-    with torch.no_grad():
+    #with torch.no_grad():
+    with torch.inference_mode(): #faster (Dan)
         for X, y in loader:
             X, y = X.to(device), y.to(device)
             logits = model(X)

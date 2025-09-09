@@ -98,7 +98,8 @@ class PerturbMeanPerturbationModel(PerturbationModel):
         # First pass: gather sums per cell type
         celltype_sums = defaultdict(lambda: defaultdict(lambda: {"sum": torch.zeros(self.output_dim), "count": 0}))
 
-        with torch.no_grad():
+        #with torch.no_grad():
+        with torch.inference_mode(): #faster (Dan)
             for batch in train_loader:
                 if (
                     self.embed_key

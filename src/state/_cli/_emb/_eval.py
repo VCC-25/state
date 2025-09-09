@@ -141,7 +141,8 @@ def run_emb_eval(args):
     ds_emb_batches = []
     logprob_batches = []
     
-    with torch.no_grad():
+    #with torch.no_grad():
+    with torch.inference_mode(): #faster (Dan)
         with torch.autocast(device_type=device_type, dtype=precision):
             for batch in tqdm(dataloader, desc="Processing batches"):
                 torch.cuda.synchronize()

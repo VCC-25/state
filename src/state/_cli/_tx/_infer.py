@@ -163,7 +163,8 @@ def run_tx_infer(args):
 
     all_preds = []
 
-    with torch.no_grad():
+    #with torch.no_grad():
+    with torch.inference_mode():        
         progress_bar = tqdm(total=n_samples, desc="Processing samples", unit="samples")
 
         for batch_idx in range(n_batches):
@@ -203,7 +204,8 @@ def run_tx_infer(args):
             }
 
             # Run inference on batch using padded=False like in working code
-            batch_preds = model.predict_step(batch, batch_idx=batch_idx, padded=False)
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                batch_preds = model.predict_step(batch, batch_idx=batch_idx, padded=False)
 
             # Extract predictions from the dictionary returned by predict_step
             # Use gene decoder output if available, otherwise use latent predictions
