@@ -100,7 +100,7 @@ def add_arguments_predict(parser: ap.ArgumentParser) -> None:
         help="Cache predictions to disk for reuse"
     )
 
-class PrefetchDataLoader:
+'''class PrefetchDataLoader:
     """
     DataLoader-Wrapper für asynchrones GPU-Prefetching
     Lädt den nächsten Batch bereits auf die GPU während der aktuelle verarbeitet wird
@@ -166,9 +166,81 @@ class PrefetchDataLoader:
             return batch.to(self.device, non_blocking=True)
         else:
             return batch
+'''
+class PrefetchDataLoader:
+    """
+    DataLoader-Wrapper für asynchrones GPU-Prefetching
+    Lädt den nächsten Batch bereits auf die GPU während der aktuelle verarbeitet wird
+    """
+    def __init__(self, loader, device, logger=None):
+        self.loader = loader
+        self.device = device
+        self.logger = logger
+        self.stream = torch.cuda.Stream() if torch.cuda.is_available() else None
+        
+        if self.logger:
+            self.logger.info(f"🚀 PrefetchDataLoader initialized for device: {device}")
+            if self.stream:
+                self.logger.info("✅ CUDA stream created for async prefetching")
+    
+    def __len__(self):
+        return len(self.loader)
+    
+    def __getattr__(self, name):
+        """Leite alle nicht gefundenen Attribute an den ursprünglichen DataLoader weiter"""
+        if hasattr(self.loader, name):
+            return getattr(self.loader, name)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+    
+    def __iter__(self):
+        batch_iter = iter(self.loader)
+        preloaded_batch = None
+        
+        # Lade ersten Batch
+        try:
+            preloaded_batch = next(batch_iter)
+            preloaded_batch = self._transfer_to_device(preloaded_batch)
+        except StopIteration:
+            return
+        
+        # Iteriere durch restliche Batches
+        for batch in batch_iter:
+            # Starte GPU-Transfer für nächsten Batch asynchron
+            if self.stream and torch.cuda.is_available():
+                with torch.cuda.stream(self.stream):
+                    next_batch = self._transfer_to_device(batch)
+            else:
+                next_batch = self._transfer_to_device(batch)
+            
+            # Gib aktuellen Batch zurück (während nächster lädt)
+            yield preloaded_batch
+            
+            # Warte auf Stream-Completion falls CUDA verwendet wird
+            if self.stream and torch.cuda.is_available():
+                torch.cuda.current_stream().wait_stream(self.stream)
+            
+            preloaded_batch = next_batch
+        
+        # Gib letzten Batch zurück
+        if preloaded_batch is not None:
+            yield preloaded_batch
+    
+    def _transfer_to_device(self, batch):
+        """Transferiert Batch-Daten auf das Zielgerät"""
+        if isinstance(batch, dict):
+            return {k: (v.to(self.device, non_blocking=True) 
+                       if torch.is_tensor(v) else v) 
+                   for k, v in batch.items()}
+        elif isinstance(batch, (list, tuple)):
+            return type(batch)(v.to(self.device, non_blocking=True) 
+                             if torch.is_tensor(v) else v 
+                             for v in batch)
+        elif torch.is_tensor(batch):
+            return batch.to(self.device, non_blocking=True)
+        else:
+            return batch
 
-
-class AdvancedPrefetchDataLoader(PrefetchDataLoader):
+'''class AdvancedPrefetchDataLoader(PrefetchDataLoader):
     """
     Erweiterte Version mit zusätzlichen Optimierungen
     """
@@ -218,6 +290,138 @@ class AdvancedPrefetchDataLoader(PrefetchDataLoader):
                 yield batch
         finally:
             producer_thread.join()
+'''
+class AdvancedPrefetchDataLoader(PrefetchDataLoader):
+    """
+    Erweiterte Version mit zusätzlichen Optimierungen
+    """
+    def __init__(self, loader, device, prefetch_factor=2, logger=None):
+        super().__init__(loader, device, logger)
+        self.prefetch_factor = prefetch_factor
+        self.prefetch_queue = []
+        
+        if self.logger:
+            self.logger.info(f"🔥 Advanced prefetching with factor: {prefetch_factor}")
+    
+    def __getattr__(self, name):
+        """Erweiterte Attribut-Weiterleitung mit Debugging"""
+        if hasattr(self.loader, name):
+            attr = getattr(self.loader, name)
+            if self.logger and name in ['batch_sampler', 'sampler', 'dataset']:
+                self.logger.debug(f"🔍 Accessing DataLoader attribute: {name} = {type(attr).__name__}")
+            return attr
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+    
+    def __iter__(self):
+        import threading
+        from queue import Queue, Empty
+        
+        if not torch.cuda.is_available():
+            # Fallback auf normale Version
+            if self.logger:
+                self.logger.info("⚠️ CUDA not available, falling back to standard prefetching")
+            return super().__iter__()
+        
+        batch_queue = Queue(maxsize=self.prefetch_factor)
+        exception_queue = Queue()
+        
+        def producer():
+            """Lädt Batches in separatem Thread"""
+            try:
+                for batch in self.loader:
+                    with torch.cuda.stream(self.stream):
+                        transferred_batch = self._transfer_to_device(batch)
+                    batch_queue.put(transferred_batch)
+                batch_queue.put(None)  # End marker
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"❌ Producer thread error: {e}")
+                exception_queue.put(e)
+                batch_queue.put(None)  # End marker auch bei Fehler
+        
+        # Starte Producer-Thread
+        producer_thread = threading.Thread(target=producer, daemon=True)
+        producer_thread.start()
+        
+        try:
+            while True:
+                # Prüfe auf Exceptions
+                try:
+                    exception = exception_queue.get_nowait()
+                    raise exception
+                except Empty:
+                    pass
+                
+                # Hole nächsten Batch
+                try:
+                    batch = batch_queue.get(timeout=30)  # 30s timeout
+                except Empty:
+                    if self.logger:
+                        self.logger.warning("⏰ Batch queue timeout - possible deadlock")
+                    break
+                
+                if batch is None:  # End marker
+                    break
+                
+                # Warte auf Stream-Completion
+                if self.stream:
+                    torch.cuda.current_stream().wait_stream(self.stream)
+                
+                yield batch
+                
+        finally:
+            # Cleanup
+            if producer_thread.is_alive():
+                producer_thread.join(timeout=5)
+                if producer_thread.is_alive() and self.logger:
+                    self.logger.warning("⚠️ Producer thread did not finish cleanly")
+
+def create_compatible_prefetch_loader(original_loader, device, advanced=False, prefetch_factor=2, logger=None):
+    """
+    Erstellt einen kompatiblen Prefetch-DataLoader mit Fallback-Mechanismus
+    """
+    
+    # Prüfe kritische Attribute
+    critical_attrs = ['batch_sampler', 'sampler', 'dataset', 'batch_size', 'num_workers']
+    missing_attrs = []
+    
+    for attr in critical_attrs:
+        if not hasattr(original_loader, attr):
+            missing_attrs.append(attr)
+    
+    if missing_attrs and logger:
+        logger.warning(f"⚠️ Original DataLoader missing attributes: {missing_attrs}")
+    
+    try:
+        if advanced and torch.cuda.is_available():
+            logger.info("🔥 Creating AdvancedPrefetchDataLoader...")
+            prefetch_loader = AdvancedPrefetchDataLoader(
+                original_loader, device, prefetch_factor, logger
+            )
+        else:
+            logger.info("🚀 Creating standard PrefetchDataLoader...")
+            prefetch_loader = PrefetchDataLoader(original_loader, device, logger)
+        
+        # Test kritische Attribute
+        test_attrs = ['batch_sampler', 'dataset']
+        for attr in test_attrs:
+            try:
+                getattr(prefetch_loader, attr)
+                if logger:
+                    logger.debug(f"✅ Attribute '{attr}' accessible")
+            except AttributeError as e:
+                if logger:
+                    logger.error(f"❌ Attribute '{attr}' not accessible: {e}")
+                raise
+        
+        return prefetch_loader
+        
+    except Exception as e:
+        if logger:
+            logger.error(f"❌ Failed to create prefetch loader: {e}")
+            logger.info("🔄 Falling back to original DataLoader")
+        return original_loader
+
 
 def run_tx_predict(args: ap.ArgumentParser):
     import logging
@@ -243,7 +447,7 @@ def run_tx_predict(args: ap.ArgumentParser):
     torch.multiprocessing.set_sharing_strategy("file_system")
 
     # NEW: Enhanced prediction setup (Dan)
-    def setup_prediction_optimizations(args, device):
+    '''def setup_prediction_optimizations(args, device):
         """Setup memory and speed optimizations for prediction"""
         optimizations = {
             'enable_memory_mapping': args.enable_memory_mapping_predict,
@@ -283,6 +487,53 @@ def run_tx_predict(args: ap.ArgumentParser):
         logger.info(f"   • Prefetching: {'✅' if optimizations['prefetch_predictions'] else '❌'}")
         logger.info(f"   • Speed Optimization: {'✅' if optimizations['optimize_for_speed'] else '❌'}")
         logger.info(f"   • Batch Size: {optimizations['batch_size']}")
+        
+        return optimizations
+    '''
+    def setup_prediction_optimizations(args, device):
+        """Setup memory and speed optimizations for prediction"""
+        optimizations = {
+            'enable_memory_mapping': args.enable_memory_mapping_predict,
+            'prefetch_predictions': args.prefetch_predictions,
+            'optimize_for_speed': args.optimize_for_speed,
+            'cache_predictions': args.cache_predictions,
+            'advanced_prefetch': getattr(args, 'advanced_prefetch', False),
+            'prefetch_factor': getattr(args, 'prefetch_factor', 2),
+        }
+        
+        # Auto-optimize batch size based on available memory
+        if args.prediction_batch_size is None:
+            if torch.cuda.is_available():
+                try:
+                    gpu_memory = torch.cuda.get_device_properties(device).total_memory
+                    if gpu_memory > 16 * 1024**3:  # >16GB
+                        optimizations['batch_size'] = 128
+                    elif gpu_memory > 8 * 1024**3:   # >8GB
+                        optimizations['batch_size'] = 64
+                    else:
+                        optimizations['batch_size'] = 32
+                except:
+                    optimizations['batch_size'] = 32
+            else:
+                try:
+                    import psutil
+                    available_memory = psutil.virtual_memory().available
+                    if available_memory > 32 * 1024**3:  # >32GB
+                        optimizations['batch_size'] = 64
+                    else:
+                        optimizations['batch_size'] = 32
+                except:
+                    optimizations['batch_size'] = 32
+        else:
+            optimizations['batch_size'] = args.prediction_batch_size
+        
+        logger.info("🚀 Prediction Optimizations:")
+        logger.info(f"   • Memory Mapping: {'✅' if optimizations['enable_memory_mapping'] else '❌'}")
+        logger.info(f"   • Prefetching: {'✅' if optimizations['prefetch_predictions'] else '❌'}")
+        logger.info(f"   • Advanced Prefetch: {'✅' if optimizations['advanced_prefetch'] else '❌'}")
+        logger.info(f"   • Speed Optimization: {'✅' if optimizations['optimize_for_speed'] else '❌'}")
+        logger.info(f"   • Batch Size: {optimizations['batch_size']}")
+        logger.info(f"   • Prefetch Factor: {optimizations['prefetch_factor']}")
         
         return optimizations
 
@@ -640,6 +891,43 @@ def run_tx_predict(args: ap.ArgumentParser):
     device = next(model.parameters()).device
     optimizations = setup_prediction_optimizations(args, device)
 
+    # Setup prediction DataLoader with optimizations
+    logger.info("📦 Setting up prediction DataLoader...")
+    
+    if optimizations['prefetch_predictions']:
+        logger.info("🚀 Setting up prefetch DataLoader...")
+        
+        # Erstelle kompatiblen Prefetch-DataLoader
+        predict_dataloader = create_compatible_prefetch_loader(
+            original_dataloader=data_module.predict_dataloader(),
+            device=device,
+            advanced=optimizations['advanced_prefetch'],
+            prefetch_factor=optimizations['prefetch_factor'],
+            logger=logger
+        )
+        
+        logger.info("✅ Prefetch DataLoader ready")
+    else:
+        predict_dataloader = data_module.predict_dataloader()
+        logger.info("📦 Using standard DataLoader")
+
+    # Test DataLoader-Kompatibilität
+    try:
+        logger.info("🧪 Testing DataLoader compatibility...")
+        
+        # Test kritische Attribute
+        batch_sampler = getattr(predict_dataloader, 'batch_sampler', None)
+        dataset = getattr(predict_dataloader, 'dataset', None)
+        
+        logger.info(f"   • batch_sampler: {type(batch_sampler).__name__ if batch_sampler else 'None'}")
+        logger.info(f"   • dataset: {type(dataset).__name__ if dataset else 'None'}")
+        logger.info("✅ DataLoader compatibility test passed")
+        
+    except Exception as e:
+        logger.error(f"❌ DataLoader compatibility test failed: {e}")
+        logger.info("🔄 Falling back to original DataLoader")
+        predict_dataloader = data_module.predict_dataloader()
+        
     # NEW: Setup prediction cache
     cache_dir = os.path.join(args.output_dir, "prediction_cache")
     prediction_cache = PredictionCache(cache_dir, enabled=args.cache_predictions)
