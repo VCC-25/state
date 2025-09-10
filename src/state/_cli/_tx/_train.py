@@ -607,6 +607,27 @@ def diagnose_shared_memory_issues(logger):
     
     return force_single_worker
 
+def safe_fallback_dataloader(original_method, logger):
+    """Sicherer Fallback auf Original-DataLoader mit minimalen Änderungen"""
+    
+    def fallback_dataloader():
+        try:
+            # Versuche Original-DataLoader zu erstellen
+            original_loader = original_method()
+            
+            # Nur num_workers auf 0 setzen, wenn möglich
+            if hasattr(original_loader, '_num_workers'):
+                original_loader._num_workers = 0
+            
+            logger.warning("⚠️ Using original DataLoader with single worker fallback")
+            return original_loader
+            
+        except Exception as e:
+            logger.error(f"❌ Even fallback DataLoader failed: {e}")
+            raise e
+    
+    return fallback_dataloader
+
 def run_tx_train(cfg: DictConfig):
     import json
     import logging
