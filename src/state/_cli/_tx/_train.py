@@ -310,7 +310,7 @@ def optimize_dataloader_for_memory(loader, logger=None):
         return SharedMemoryOptimizedDataLoader(loader, None, logger)
 
 # NEW: DataLoader Memory-Optimierung (Dan)
-def optimize_datamodule_loaders(data_module, cfg, logger):
+'''def optimize_datamodule_loaders(data_module, cfg, logger):
     """Optimiert DataModule DataLoader für bessere Memory-Nutzung"""
     
     # Prüfe ob Optimierung gewünscht ist
@@ -382,10 +382,102 @@ def optimize_datamodule_loaders(data_module, cfg, logger):
     
     logger.info("✅ DataModule DataLoaders optimized")
     return data_module
+'''
+def optimize_datamodule_loaders(data_module, cfg, logger):
+    """Optimiert DataModule DataLoader für bessere Memory-Nutzung"""
+    
+    # Prüfe ob Optimierung gewünscht ist
+    optimize_memory = cfg.get("optimize_dataloader_memory", True)
+    force_single_worker = cfg.get("force_single_worker", False)
+    max_workers = cfg.get("max_dataloader_workers", 4)
+    
+    if not optimize_memory and not force_single_worker:
+        logger.info("ℹ️ DataLoader optimization disabled")
+        return data_module
+    
+    logger.info("🔧 Optimizing DataModule DataLoaders...")
+    
+    # Bestimme optimale Worker-Anzahl
+    def get_optimal_workers(is_validation=False):
+        if force_single_worker:
+            return 0, False, "forced single-worker"
+        
+        available_memory = psutil.virtual_memory().available / (1024**3)
+        
+        # Sehr konservative Einstellungen
+        if available_memory < 4:
+            return 0, False, f"very low memory ({available_memory:.1f}GB)"
+        elif available_memory < 8:
+            return 0, False, f"low memory ({available_memory:.1f}GB)"
+        elif available_memory < 16:
+            workers = 1 if is_validation else 2
+            return workers, torch.cuda.is_available(), f"medium memory ({available_memory:.1f}GB)"
+        else:
+            workers = min(2 if is_validation else max_workers, 4)  # Max 4 workers
+            return workers, torch.cuda.is_available(), f"sufficient memory ({available_memory:.1f}GB)"
+    
+    # Optimiere Train DataLoader
+    if hasattr(data_module, 'train_dataloader'):
+        original_train_method = data_module.train_dataloader
+        
+        def optimized_train_dataloader():
+            loader = original_train_method()
+            
+            # Bestimme optimale Einstellungen
+            num_workers, pin_memory, reason = get_optimal_workers(is_validation=False)
+            
+            # Modifiziere DataLoader-Attribute direkt
+            if hasattr(loader, 'num_workers'):
+                loader.num_workers = num_workers
+            if hasattr(loader, 'pin_memory'):
+                loader.pin_memory = pin_memory
+            
+            # Zusätzliche Sicherheitsmaßnahmen
+            if hasattr(loader, 'persistent_workers'):
+                loader.persistent_workers = num_workers > 0
+            if hasattr(loader, 'prefetch_factor') and num_workers == 0:
+                loader.prefetch_factor = None
+            
+            logger.info(f"🔧 Train DataLoader optimized: {num_workers} workers, pin_memory={pin_memory} ({reason})")
+            return loader
+        
+        data_module.train_dataloader = optimized_train_dataloader
+    
+    # Optimiere Val DataLoader
+    if hasattr(data_module, 'val_dataloader'):
+        original_val_method = data_module.val_dataloader
+        
+        def optimized_val_dataloader():
+            loader = original_val_method()
+            
+            # Validation braucht weniger Workers
+            num_workers, pin_memory, reason = get_optimal_workers(is_validation=True)
+            
+            # Modifiziere DataLoader-Attribute direkt
+            if hasattr(loader, 'num_workers'):
+                loader.num_workers = num_workers
+            if hasattr(loader, 'pin_memory'):
+                loader.pin_memory = pin_memory
+            
+            # Zusätzliche Sicherheitsmaßnahmen
+            if hasattr(loader, 'persistent_workers'):
+                loader.persistent_workers = num_workers > 0
+            if hasattr(loader, 'prefetch_factor') and num_workers == 0:
+                loader.prefetch_factor = None
+            
+            logger.info(f"🔧 Val DataLoader optimized: {num_workers} workers, pin_memory={pin_memory} ({reason})")
+            return loader
+        
+        data_module.val_dataloader = optimized_val_dataloader
+    
+    logger.info("✅ DataModule DataLoaders optimized")
+    return data_module
 
 def diagnose_shared_memory_issues(logger):
     """Diagnostiziert potentielle Shared Memory Probleme"""
     logger.info("🔍 Diagnosing shared memory configuration...")
+    
+    force_single_worker = False
     
     try:
         import subprocess
@@ -405,31 +497,61 @@ def diagnose_shared_memory_issues(logger):
                 logger.info(f"   • Used: {shm_used}")
                 logger.info(f"   • Available: {shm_available}")
                 
-                # Warnung bei wenig Shared Memory
-                if 'M' in shm_available and int(shm_available.replace('M', '')) < 512:
-                    logger.warning("⚠️ Low shared memory available - consider using single-worker DataLoader")
+                # Erweiterte Prüfung für verschiedene Größenangaben
+                available_numeric = 0
+                if 'G' in shm_available:
+                    available_numeric = float(shm_available.replace('G', '')) * 1024  # Convert to MB
+                elif 'M' in shm_available:
+                    available_numeric = float(shm_available.replace('M', ''))
                 elif 'K' in shm_available:
-                    logger.warning("⚠️ Very low shared memory available - forcing single-worker DataLoader")
-                    return True  # Force single worker
+                    available_numeric = float(shm_available.replace('K', '')) / 1024  # Convert to MB
+                
+                # Konservative Entscheidung: Weniger als 2GB Shared Memory = Single Worker
+                if available_numeric < 2048:  # < 2GB
+                    logger.warning(f"⚠️ Shared memory ({shm_available}) might be insufficient for multi-worker DataLoader")
+                    force_single_worker = True
         
-        # Prüfe System-Limits
+        # Zusätzliche Prüfungen
+        # 1. Prüfe ob wir in einem Container sind
         try:
-            with open('/proc/sys/kernel/shmmax', 'r') as f:
-                shmmax = int(f.read().strip())
-                logger.info(f"📊 System shmmax: {shmmax / (1024**3):.2f}GB")
-                
-            with open('/proc/sys/kernel/shmall', 'r') as f:
-                shmall = int(f.read().strip())
-                page_size = 4096  # Typical page size
-                logger.info(f"📊 System shmall: {(shmall * page_size) / (1024**3):.2f}GB")
-                
-        except Exception as e:
-            logger.info(f"ℹ️ Could not read system shared memory limits: {e}")
+            with open('/proc/1/cgroup', 'r') as f:
+                cgroup_content = f.read()
+                if 'docker' in cgroup_content or 'containerd' in cgroup_content:
+                    logger.warning("⚠️ Running in container - shared memory might be limited")
+                    force_single_worker = True
+        except:
+            pass
+        
+        # 2. Prüfe verfügbare Prozesse/Threads
+        try:
+            import resource
+            max_processes = resource.getrlimit(resource.RLIMIT_NPROC)[0]
+            if max_processes < 1024:
+                logger.warning(f"⚠️ Low process limit ({max_processes}) - using single worker")
+                force_single_worker = True
+        except:
+            pass
+        
+        # 3. Prüfe System Load
+        try:
+            load_avg = os.getloadavg()[0]  # 1-minute load average
+            cpu_count = os.cpu_count()
+            if load_avg > cpu_count * 2:
+                logger.warning(f"⚠️ High system load ({load_avg:.1f}) - using single worker")
+                force_single_worker = True
+        except:
+            pass
         
     except Exception as e:
         logger.warning(f"⚠️ Shared memory diagnosis failed: {e}")
+        force_single_worker = True  # Be conservative on error
     
-    return False  # Don't force single worker
+    if force_single_worker:
+        logger.warning("🔧 Forcing single-worker DataLoader due to system constraints")
+    else:
+        logger.info("✅ Multi-worker DataLoader should be safe")
+    
+    return force_single_worker
 
 def run_tx_train(cfg: DictConfig):
     import json
@@ -450,6 +572,9 @@ def run_tx_train(cfg: DictConfig):
     from ...tx.callbacks import BatchSpeedMonitorCallback
     from ...tx.utils import get_checkpoint_callbacks, get_lightning_module, get_loggers
 
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    os.environ['OMP_NUM_THREADS'] = '1'  # Reduziere Threading-Konflikte
+    
     # DAN: Hardware-Setup-Funktionen
     def detect_accelerator():
         """Detect available accelerator with ROCm support"""
@@ -764,56 +889,137 @@ def run_tx_train(cfg: DictConfig):
     data_module.setup(stage="fit")
     dl = data_module.train_dataloader()
 
+    # NEW: Shared Memory und DataLoader Optimierung (Dan)
     logger.info("🔧 Starting DataLoader optimization...")
 
+    # 1. Diagnose Shared Memory
     force_single_worker_due_to_shm = diagnose_shared_memory_issues(logger)
     if force_single_worker_due_to_shm:
         cfg["force_single_worker"] = True
-        logger.warning("⚠️ Forcing single-worker DataLoader due to shared memory constraints")
 
-    # NEW: DataLoader-Optimierung für Shared Memory Probleme (Dan)
+    # 2. Optimiere DataModule
     data_module = optimize_datamodule_loaders(data_module, cfg, logger)
 
-    #print("num_workers:", dl.num_workers)
-    #print("batch size:", dl.batch_size)
+    # 3. Erweiterte DataLoader Tests mit mehreren Fallback-Stufen
+    logger.info("🧪 Testing optimized DataLoader...")
 
-    #Test DataLoader (optional, for Debugging)
-    try:
-        logger.info("🧪 Testing optimized DataLoader...")
-        dl = data_module.train_dataloader()
-        logger.info(f"✅ Train DataLoader test successful:")
-        logger.info(f"   • num_workers: {dl.num_workers}")
-        logger.info(f"   • batch_size: {dl.batch_size}")
-        logger.info(f"   • pin_memory: {getattr(dl, 'pin_memory', False)}")
-        
-        # Test einen Batch
-        test_batch = next(iter(dl))
-        logger.info(f"   • Test batch loaded successfully")
-        del test_batch  # Cleanup
-        
-    except Exception as e:
-        logger.error(f"❌ DataLoader test failed: {e}")
-        logger.warning("🔧 Falling back to single-worker DataLoader...")
-        cfg["force_single_worker"] = True
-        data_module = optimize_datamodule_loaders(data_module, cfg, logger)
+    test_success = False
+    fallback_attempts = 0
+    max_fallback_attempts = 3
 
-    logger.info("✅ DataLoader optimization complete")
+    while not test_success and fallback_attempts < max_fallback_attempts:
+        try:
+            # Test Train DataLoader
+            dl = data_module.train_dataloader()
+            logger.info(f"✅ Train DataLoader created successfully:")
+            logger.info(f"   • num_workers: {dl.num_workers}")
+            logger.info(f"   • batch_size: {getattr(dl, 'batch_size', 'batch_sampler_controlled')}")
+            logger.info(f"   • pin_memory: {getattr(dl, 'pin_memory', False)}")
+            
+            # Vorsichtiger Batch-Test mit Timeout
+            logger.info("🧪 Testing batch loading...")
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Batch loading timeout")
+            
+            # Set timeout for batch loading
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(30)  # 30 second timeout
+            
+            try:
+                batch_iter = iter(dl)
+                test_batch = next(batch_iter)
+                logger.info("✅ Test batch loaded successfully")
+                
+                # Cleanup
+                del test_batch
+                del batch_iter
+                signal.alarm(0)  # Cancel timeout
+                
+                test_success = True
+                
+            except TimeoutError:
+                logger.error("❌ Batch loading timeout - DataLoader too slow")
+                signal.alarm(0)
+                raise Exception("Batch loading timeout")
+            
+            except Exception as batch_error:
+                signal.alarm(0)
+                logger.error(f"❌ Batch loading failed: {batch_error}")
+                raise batch_error
+                
+        except Exception as e:
+            fallback_attempts += 1
+            logger.error(f"❌ DataLoader test failed (attempt {fallback_attempts}): {e}")
+            
+            if fallback_attempts < max_fallback_attempts:
+                # Progressive fallback strategy
+                if fallback_attempts == 1:
+                    logger.warning("🔧 Fallback 1: Reducing to single worker...")
+                    cfg["force_single_worker"] = True
+                    cfg["max_dataloader_workers"] = 0
+                elif fallback_attempts == 2:
+                    logger.warning("🔧 Fallback 2: Disabling pin_memory...")
+                    cfg["force_single_worker"] = True
+                    cfg["max_dataloader_workers"] = 0
+                    # Force pin_memory = False
+                    if hasattr(data_module, 'train_dataloader'):
+                        original_method = data_module.train_dataloader
+                        def no_pin_memory_loader():
+                            loader = original_method()
+                            loader.pin_memory = False
+                            loader.num_workers = 0
+                            return loader
+                        data_module.train_dataloader = no_pin_memory_loader
+                
+                # Re-optimize with new settings
+                data_module = optimize_datamodule_loaders(data_module, cfg, logger)
+            else:
+                logger.error("❌ All fallback attempts failed - using emergency single-worker mode")
+                # Emergency fallback
+                if hasattr(data_module, 'train_dataloader'):
+                    original_method = data_module.train_dataloader
+                    def emergency_loader():
+                        loader = original_method()
+                        loader.num_workers = 0
+                        loader.pin_memory = False
+                        loader.persistent_workers = False
+                        if hasattr(loader, 'prefetch_factor'):
+                            loader.prefetch_factor = None
+                        return loader
+                    data_module.train_dataloader = emergency_loader
+                
+                # Try one more time
+                try:
+                    dl = data_module.train_dataloader()
+                    test_batch = next(iter(dl))
+                    del test_batch
+                    test_success = True
+                    logger.warning("⚠️ Emergency single-worker DataLoader working")
+                except Exception as final_error:
+                    logger.error(f"❌ Even emergency DataLoader failed: {final_error}")
+                    raise RuntimeError("DataLoader completely unusable - check system configuration")
 
-    var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
-    if cfg["data"]["kwargs"]["output_space"] == "gene":
-        gene_dim = var_dims.get("hvg_dim", 2000)  # fallback if key missing
+    if test_success:
+        logger.info("✅ DataLoader optimization and testing complete")
     else:
-        gene_dim = var_dims.get("gene_dim", 2000)  # fallback if key missing
-    latent_dim = var_dims["output_dim"]  # same as model.output_dim
-    hidden_dims = cfg["model"]["kwargs"].get("decoder_hidden_dims", [1024, 1024, 512])
+        logger.error("❌ DataLoader optimization failed")
+        var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
+        if cfg["data"]["kwargs"]["output_space"] == "gene":
+            gene_dim = var_dims.get("hvg_dim", 2000)  # fallback if key missing
+        else:
+            gene_dim = var_dims.get("gene_dim", 2000)  # fallback if key missing
+        latent_dim = var_dims["output_dim"]  # same as model.output_dim
+        hidden_dims = cfg["model"]["kwargs"].get("decoder_hidden_dims", [1024, 1024, 512])
 
-    decoder_cfg = dict(
-        latent_dim=latent_dim,
-        gene_dim=gene_dim,
-        hidden_dims=hidden_dims,
-        dropout=cfg["model"]["kwargs"].get("decoder_dropout", 0.1),
-        residual_decoder=cfg["model"]["kwargs"].get("residual_decoder", False),
-    )
+        decoder_cfg = dict(
+            latent_dim=latent_dim,
+            gene_dim=gene_dim,
+            hidden_dims=hidden_dims,
+            dropout=cfg["model"]["kwargs"].get("decoder_dropout", 0.1),
+            residual_decoder=cfg["model"]["kwargs"].get("residual_decoder", False),
+        )
 
     # tuck it into the kwargs that will reach the LightningModule
     cfg["model"]["kwargs"]["decoder_cfg"] = decoder_cfg
