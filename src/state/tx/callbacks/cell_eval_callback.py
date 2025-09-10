@@ -871,7 +871,8 @@ class CellEvalCallback(Callback):
                         prefetch_predictions=True,
                         optimize_for_speed=True,
                         cache_predictions=True,
-                        advanced_prefetch=True):
+                        advanced_prefetch=True,
+                        prefetch_factor=2):
                 self.output_dir = output_dir
                 self.checkpoint = os.path.basename(checkpoint)  # only filename
                 self.test_time_finetune = 0  # No fine-tuning during training
@@ -881,6 +882,7 @@ class CellEvalCallback(Callback):
                 self.enable_memory_mapping_predict=enable_memory_mapping_predict,
                 self.prefetch_predictions=prefetch_predictions,
                 self.advanced_prefetch=advanced_prefetch
+                self.prefetch_factor=prefetch_factor
                 self.optimize_for_speed=optimize_for_speed,
                 self.cache_predictions=cache_predictions
         
@@ -908,7 +910,8 @@ class CellEvalCallback(Callback):
                     prefetch_predictions=True,
                     optimize_for_speed=True,
                     cache_predictions=True,
-                    advanced_prefetch=True
+                    advanced_prefetch=True,
+                    prefetch_factor=2
                 )
                 res_baseline, self.agg_baseline = run_tx_predict(args)
                 logger.info(f"Cell-eval baseline results: {self.agg_baseline}")
@@ -923,7 +926,8 @@ class CellEvalCallback(Callback):
                 prefetch_predictions=True,
                 optimize_for_speed=True,
                 cache_predictions=True,
-                advanced_prefetch=True
+                advanced_prefetch=True,
+                prefetch_factor=2
             )
             
             # run_tx_predict aufrufen
