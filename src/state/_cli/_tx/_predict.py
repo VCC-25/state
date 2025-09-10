@@ -899,7 +899,7 @@ def run_tx_predict(args: ap.ArgumentParser):
         
         # Erstelle kompatiblen Prefetch-DataLoader
         predict_dataloader = create_compatible_prefetch_loader(
-            original_dataloader=data_module.predict_dataloader(),
+            original_loader=data_module.predict_dataloader(),
             device=device,
             advanced=optimizations['advanced_prefetch'],
             prefetch_factor=optimizations['prefetch_factor'],
@@ -927,7 +927,7 @@ def run_tx_predict(args: ap.ArgumentParser):
         logger.error(f"❌ DataLoader compatibility test failed: {e}")
         logger.info("🔄 Falling back to original DataLoader")
         predict_dataloader = data_module.predict_dataloader()
-        
+
     # NEW: Setup prediction cache
     cache_dir = os.path.join(args.output_dir, "prediction_cache")
     prediction_cache = PredictionCache(cache_dir, enabled=args.cache_predictions)
