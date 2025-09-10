@@ -417,6 +417,20 @@ def optimize_datamodule_loaders(data_module, cfg, logger):
             workers = min(2 if is_validation else max_workers, 4)  # Max 4 workers
             return workers, torch.cuda.is_available(), f"sufficient memory ({available_memory:.1f}GB)"
     
+    def debug_dataloader_params(original_loader, logger):
+        """Debug-Information über DataLoader-Parameter"""
+        
+        logger.info("🔍 DataLoader Parameter Debug:")
+        logger.info(f"   • dataset: {type(original_loader.dataset).__name__}")
+        logger.info(f"   • batch_size: {getattr(original_loader, 'batch_size', 'None')}")
+        logger.info(f"   • shuffle: {getattr(original_loader, 'shuffle', 'None')}")
+        logger.info(f"   • sampler: {type(getattr(original_loader, 'sampler', None)).__name__ if getattr(original_loader, 'sampler', None) else 'None'}")
+        logger.info(f"   • batch_sampler: {type(getattr(original_loader, 'batch_sampler', None)).__name__ if getattr(original_loader, 'batch_sampler', None) else 'None'}")
+        logger.info(f"   • num_workers: {getattr(original_loader, 'num_workers', 'None')}")
+        logger.info(f"   • pin_memory: {getattr(original_loader, 'pin_memory', 'None')}")
+        logger.info(f"   • drop_last: {getattr(original_loader, 'drop_last', 'None')}")
+        logger.info(f"   • persistent_workers: {getattr(original_loader, 'persistent_workers', 'None')}")
+        
     def create_optimized_dataloader(original_loader, is_validation=False):
         """Erstellt einen neuen optimierten DataLoader"""
         from torch.utils.data import DataLoader
