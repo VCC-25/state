@@ -574,7 +574,7 @@ def run_tx_train(cfg: DictConfig):
 
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
     os.environ['OMP_NUM_THREADS'] = '1'  # Reduziere Threading-Konflikte
-    
+
     # DAN: Hardware-Setup-Funktionen
     def detect_accelerator():
         """Detect available accelerator with ROCm support"""
@@ -1005,21 +1005,22 @@ def run_tx_train(cfg: DictConfig):
         logger.info("✅ DataLoader optimization and testing complete")
     else:
         logger.error("❌ DataLoader optimization failed")
-        var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
-        if cfg["data"]["kwargs"]["output_space"] == "gene":
-            gene_dim = var_dims.get("hvg_dim", 2000)  # fallback if key missing
-        else:
-            gene_dim = var_dims.get("gene_dim", 2000)  # fallback if key missing
-        latent_dim = var_dims["output_dim"]  # same as model.output_dim
-        hidden_dims = cfg["model"]["kwargs"].get("decoder_hidden_dims", [1024, 1024, 512])
 
-        decoder_cfg = dict(
-            latent_dim=latent_dim,
-            gene_dim=gene_dim,
-            hidden_dims=hidden_dims,
-            dropout=cfg["model"]["kwargs"].get("decoder_dropout", 0.1),
-            residual_decoder=cfg["model"]["kwargs"].get("residual_decoder", False),
-        )
+    var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
+    if cfg["data"]["kwargs"]["output_space"] == "gene":
+        gene_dim = var_dims.get("hvg_dim", 2000)  # fallback if key missing
+    else:
+        gene_dim = var_dims.get("gene_dim", 2000)  # fallback if key missing
+    latent_dim = var_dims["output_dim"]  # same as model.output_dim
+    hidden_dims = cfg["model"]["kwargs"].get("decoder_hidden_dims", [1024, 1024, 512])
+
+    decoder_cfg = dict(
+        latent_dim=latent_dim,
+        gene_dim=gene_dim,
+        hidden_dims=hidden_dims,
+        dropout=cfg["model"]["kwargs"].get("decoder_dropout", 0.1),
+        residual_decoder=cfg["model"]["kwargs"].get("residual_decoder", False),
+    )
 
     # tuck it into the kwargs that will reach the LightningModule
     cfg["model"]["kwargs"]["decoder_cfg"] = decoder_cfg
