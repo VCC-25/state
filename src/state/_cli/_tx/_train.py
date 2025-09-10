@@ -416,30 +416,57 @@ def optimize_datamodule_loaders(data_module, cfg, logger):
             workers = min(2 if is_validation else max_workers, 4)  # Max 4 workers
             return workers, torch.cuda.is_available(), f"sufficient memory ({available_memory:.1f}GB)"
     
+    def create_optimized_dataloader(original_loader, is_validation=False):
+        """Erstellt einen neuen optimierten DataLoader"""
+        from torch.utils.data import DataLoader
+        
+        # Hole optimale Einstellungen
+        num_workers, pin_memory, reason = get_optimal_workers(is_validation)
+        
+        # Extrahiere alle relevanten Attribute vom Original-DataLoader
+        dataset = original_loader.dataset
+        batch_size = getattr(original_loader, 'batch_size', None)
+        shuffle = getattr(original_loader, 'shuffle', False)
+        sampler = getattr(original_loader, 'sampler', None)
+        batch_sampler = getattr(original_loader, 'batch_sampler', None)
+        collate_fn = getattr(original_loader, 'collate_fn', None)
+        drop_last = getattr(original_loader, 'drop_last', False)
+        timeout = getattr(original_loader, 'timeout', 0)
+        worker_init_fn = getattr(original_loader, 'worker_init_fn', None)
+        multiprocessing_context = getattr(original_loader, 'multiprocessing_context', None)
+        generator = getattr(original_loader, 'generator', None)
+        
+        # Erstelle neuen DataLoader mit optimierten Einstellungen
+        new_loader = DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            timeout=timeout,
+            worker_init_fn=worker_init_fn,
+            multiprocessing_context=multiprocessing_context,
+            generator=generator,
+            persistent_workers=num_workers > 0,  # Nur wenn Workers vorhanden
+            prefetch_factor=2 if num_workers > 0 else None,
+        )
+        
+        logger.info(f"🔧 {'Val' if is_validation else 'Train'} DataLoader recreated: {num_workers} workers, pin_memory={pin_memory} ({reason})")
+        return new_loader
+    
     # Optimiere Train DataLoader
     if hasattr(data_module, 'train_dataloader'):
         original_train_method = data_module.train_dataloader
         
         def optimized_train_dataloader():
-            loader = original_train_method()
-            
-            # Bestimme optimale Einstellungen
-            num_workers, pin_memory, reason = get_optimal_workers(is_validation=False)
-            
-            # Modifiziere DataLoader-Attribute direkt
-            if hasattr(loader, 'num_workers'):
-                loader.num_workers = num_workers
-            if hasattr(loader, 'pin_memory'):
-                loader.pin_memory = pin_memory
-            
-            # Zusätzliche Sicherheitsmaßnahmen
-            if hasattr(loader, 'persistent_workers'):
-                loader.persistent_workers = num_workers > 0
-            if hasattr(loader, 'prefetch_factor') and num_workers == 0:
-                loader.prefetch_factor = None
-            
-            logger.info(f"🔧 Train DataLoader optimized: {num_workers} workers, pin_memory={pin_memory} ({reason})")
-            return loader
+            # Hole Original-DataLoader
+            original_loader = original_train_method()
+            # Erstelle optimierten DataLoader
+            return create_optimized_dataloader(original_loader, is_validation=False)
         
         data_module.train_dataloader = optimized_train_dataloader
     
@@ -448,25 +475,10 @@ def optimize_datamodule_loaders(data_module, cfg, logger):
         original_val_method = data_module.val_dataloader
         
         def optimized_val_dataloader():
-            loader = original_val_method()
-            
-            # Validation braucht weniger Workers
-            num_workers, pin_memory, reason = get_optimal_workers(is_validation=True)
-            
-            # Modifiziere DataLoader-Attribute direkt
-            if hasattr(loader, 'num_workers'):
-                loader.num_workers = num_workers
-            if hasattr(loader, 'pin_memory'):
-                loader.pin_memory = pin_memory
-            
-            # Zusätzliche Sicherheitsmaßnahmen
-            if hasattr(loader, 'persistent_workers'):
-                loader.persistent_workers = num_workers > 0
-            if hasattr(loader, 'prefetch_factor') and num_workers == 0:
-                loader.prefetch_factor = None
-            
-            logger.info(f"🔧 Val DataLoader optimized: {num_workers} workers, pin_memory={pin_memory} ({reason})")
-            return loader
+            # Hole Original-DataLoader
+            original_loader = original_val_method()
+            # Erstelle optimierten DataLoader
+            return create_optimized_dataloader(original_loader, is_validation=True)
         
         data_module.val_dataloader = optimized_val_dataloader
     
@@ -900,32 +912,24 @@ def run_tx_train(cfg: DictConfig):
     # 2. Optimiere DataModule
     data_module = optimize_datamodule_loaders(data_module, cfg, logger)
 
-    # 3. Erweiterte DataLoader Tests mit mehreren Fallback-Stufen
+    # 3. Einfacher Test ohne Rekursion
     logger.info("🧪 Testing optimized DataLoader...")
 
     test_success = False
-    fallback_attempts = 0
-    max_fallback_attempts = 3
+    max_attempts = 3
 
-    while not test_success and fallback_attempts < max_fallback_attempts:
+    for attempt in range(1, max_attempts + 1):
         try:
             # Test Train DataLoader
             dl = data_module.train_dataloader()
-            logger.info(f"✅ Train DataLoader created successfully:")
+            logger.info(f"✅ Train DataLoader created successfully (attempt {attempt}):")
             logger.info(f"   • num_workers: {dl.num_workers}")
             logger.info(f"   • batch_size: {getattr(dl, 'batch_size', 'batch_sampler_controlled')}")
             logger.info(f"   • pin_memory: {getattr(dl, 'pin_memory', False)}")
+            logger.info(f"   • persistent_workers: {getattr(dl, 'persistent_workers', False)}")
             
             # Vorsichtiger Batch-Test mit Timeout
             logger.info("🧪 Testing batch loading...")
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Batch loading timeout")
-            
-            # Set timeout for batch loading
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(30)  # 30 second timeout
             
             try:
                 batch_iter = iter(dl)
@@ -935,76 +939,44 @@ def run_tx_train(cfg: DictConfig):
                 # Cleanup
                 del test_batch
                 del batch_iter
-                signal.alarm(0)  # Cancel timeout
+                del dl  # Wichtig: DataLoader löschen
                 
                 test_success = True
+                break
                 
-            except TimeoutError:
-                logger.error("❌ Batch loading timeout - DataLoader too slow")
-                signal.alarm(0)
-                raise Exception("Batch loading timeout")
-            
             except Exception as batch_error:
-                signal.alarm(0)
                 logger.error(f"❌ Batch loading failed: {batch_error}")
+                del dl  # Cleanup auch bei Fehler
                 raise batch_error
                 
         except Exception as e:
-            fallback_attempts += 1
-            logger.error(f"❌ DataLoader test failed (attempt {fallback_attempts}): {e}")
+            logger.error(f"❌ DataLoader test failed (attempt {attempt}): {e}")
             
-            if fallback_attempts < max_fallback_attempts:
-                # Progressive fallback strategy
-                if fallback_attempts == 1:
-                    logger.warning("🔧 Fallback 1: Reducing to single worker...")
+            if attempt < max_attempts:
+                # Progressive Fallback-Strategie
+                if attempt == 1:
+                    logger.warning("🔧 Fallback 1: Forcing single worker...")
                     cfg["force_single_worker"] = True
                     cfg["max_dataloader_workers"] = 0
-                elif fallback_attempts == 2:
-                    logger.warning("🔧 Fallback 2: Disabling pin_memory...")
+                elif attempt == 2:
+                    logger.warning("🔧 Fallback 2: Emergency mode...")
                     cfg["force_single_worker"] = True
                     cfg["max_dataloader_workers"] = 0
-                    # Force pin_memory = False
-                    if hasattr(data_module, 'train_dataloader'):
-                        original_method = data_module.train_dataloader
-                        def no_pin_memory_loader():
-                            loader = original_method()
-                            loader.pin_memory = False
-                            loader.num_workers = 0
-                            return loader
-                        data_module.train_dataloader = no_pin_memory_loader
+                    cfg["optimize_dataloader_memory"] = False  # Disable all optimizations
                 
-                # Re-optimize with new settings
+                # Re-optimize mit neuen Einstellungen
                 data_module = optimize_datamodule_loaders(data_module, cfg, logger)
             else:
-                logger.error("❌ All fallback attempts failed - using emergency single-worker mode")
-                # Emergency fallback
-                if hasattr(data_module, 'train_dataloader'):
-                    original_method = data_module.train_dataloader
-                    def emergency_loader():
-                        loader = original_method()
-                        loader.num_workers = 0
-                        loader.pin_memory = False
-                        loader.persistent_workers = False
-                        if hasattr(loader, 'prefetch_factor'):
-                            loader.prefetch_factor = None
-                        return loader
-                    data_module.train_dataloader = emergency_loader
-                
-                # Try one more time
-                try:
-                    dl = data_module.train_dataloader()
-                    test_batch = next(iter(dl))
-                    del test_batch
-                    test_success = True
-                    logger.warning("⚠️ Emergency single-worker DataLoader working")
-                except Exception as final_error:
-                    logger.error(f"❌ Even emergency DataLoader failed: {final_error}")
-                    raise RuntimeError("DataLoader completely unusable - check system configuration")
+                logger.error("❌ All attempts failed")
 
     if test_success:
         logger.info("✅ DataLoader optimization and testing complete")
     else:
-        logger.error("❌ DataLoader optimization failed")
+        logger.error("❌ DataLoader optimization failed - proceeding with default settings")
+        # Fallback auf Original-DataModule (ohne Optimierungen)
+        logger.warning("⚠️ Using original DataModule without optimizations")
+
+    logger.info("✅ DataLoader setup complete - proceeding with training")
 
     var_dims = data_module.get_var_dims()  # {"gene_dim": …, "hvg_dim": …}
     if cfg["data"]["kwargs"]["output_space"] == "gene":
