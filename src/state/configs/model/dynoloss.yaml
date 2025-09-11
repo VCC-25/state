@@ -1,0 +1,37 @@
+# Enhanced PDS/DES optimization with advanced features
+name: state
+kwargs:
+  # --- Enhanced PDS Optimization ---
+  loss: "se"                  # Combined Sinkhorn + Energy loss
+  sinkhorn_weight: 0.01       # Sinkhorn for local structure
+  energy_weight: 1.0          # Energy for global distribution matching
+  main_loss_weight: 0.8       # Balance with decoder loss
+  
+  # --- Enhanced DES Optimization ---
+  nb_decoder: true            # Negative Binomial for count modeling
+  decoder_loss_weight: 1.2    # Emphasize gene expression accuracy
+  detach_decoder: false       # Keep gradients flowing
+  
+  # --- Advanced Architecture ---
+  cell_set_len: 384
+  hidden_dim: 1536
+  n_encoder_layers: 6         # More encoding capacity
+  n_decoder_layers: 6         # More decoding capacity
+  use_basal_projection: true  # Better basal cell encoding
+  
+  # --- Batch and Regularization ---
+  batch_encoder: true         # Learn batch effects
+  regularization: 0.001       # L1 regularization on effects
+  confidence_head: true       # Uncertainty estimation
+  
+  # --- Transformer Enhancements ---
+  transformer_backbone_key: "llama"
+  transformer_backbone_kwargs:
+      max_position_embeddings: ${model.kwargs.cell_set_len}
+      hidden_size: ${model.kwargs.hidden_dim}
+      intermediate_size: 5952   # Larger FFN
+      num_hidden_layers: 8      # More transformer layers
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      attention_dropout: 0.05   # Light regularization
+      hidden_dropout: 0.05

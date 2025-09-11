@@ -4,7 +4,9 @@ from typing import Dict, Optional
 import anndata as ad
 import numpy as np
 import torch
+import torch.optim as optim
 import torch.nn as nn
+from torch.optim.lr_scheduler import StepLR, ExponentialLR, CosineAnnealingLR
 
 from geomloss import SamplesLoss
 from typing import Tuple
@@ -152,6 +154,10 @@ class StateTransitionPerturbationModel(PerturbationModel):
         self.decoder_loss_weight = kwargs.get("decoder_weight", 1.0)
         self.regularization = kwargs.get("regularization", 0.0)
         self.detach_decoder = kwargs.get("detach_decoder", False)
+        self.lr_scheduler = kwargs.get("lr_scheduler", "StepLR")
+        self.lr_step_size = kwargs.get("lr_step_size", 200)
+        self.lr_gamma = kwargs.get("lr_gamma", 0.95)
+        self.weight_decay = kwargs.get("weight_decay", 0.0)
 
         self.transformer_backbone_key = transformer_backbone_key
         self.transformer_backbone_kwargs = transformer_backbone_kwargs
@@ -459,7 +465,10 @@ class StateTransitionPerturbationModel(PerturbationModel):
                     latent_preds = pred.detach()
             else:
                 latent_preds = pred
-
+            # Add batch concatenation like PseudobulkPerturbationModel
+            batch_var = batch["batch"].reshape(latent_preds.shape[0], latent_preds.shape[1], -1)
+            if self.batch_dim is not None and isinstance(self.gene_decoder, NBDecoder):
+               latent_preds = torch.cat([latent_preds, batch_var], dim=-1)
             if isinstance(self.gene_decoder, NBDecoder):
                 mu, theta = self.gene_decoder(latent_preds)
                 gene_targets = batch["pert_cell_counts"].reshape_as(mu)
@@ -631,7 +640,25 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         if self.gene_decoder is not None:
             if isinstance(self.gene_decoder, NBDecoder):
-                mu, _ = self.gene_decoder(latent_output)
+                decoder_input = latent_output
+                if self.batch_dim is not None:
+                    # latent_output [S, 18080] -> [1, S, 18080]
+                    seq_len = latent_output.shape[0]
+                    latent_reshaped = latent_output.reshape(1, seq_len, -1)
+
+                    b = batch["batch"]
+                    if b.dim() == 1:  # [S] indices
+                        one_hot = torch.nn.functional.one_hot(b, num_classes=self.batch_dim).float().unsqueeze(0)  # [1,S,530]
+                    elif b.dim() == 2 and b.size(0) == 1:  # [1,S] indices
+                        one_hot = torch.nn.functional.one_hot(b.squeeze(0), num_classes=self.batch_dim).float().unsqueeze(0)
+                    elif b.dim() == 3 and b.size(-1) == self.batch_dim:  # already one‑hot
+                        one_hot = b.float()
+                    else:
+                        raise ValueError("Invalid batch tensor shape for decoder concatenation")
+
+                    # Concatenate along feature axis and flatten back for the decoder: [1,S,(18080+530)] -> [S,18610]
+                    decoder_input = torch.cat([latent_reshaped, one_hot], dim=-1).reshape(-1, latent_reshaped.size(-1) + self.batch_dim)
+                mu, _ = self.gene_decoder(decoder_input)
                 pert_cell_counts_preds = mu
             else:
                 pert_cell_counts_preds = self.gene_decoder(latent_output)
@@ -639,3 +666,23 @@ class StateTransitionPerturbationModel(PerturbationModel):
             output_dict["pert_cell_counts_preds"] = pert_cell_counts_preds
 
         return output_dict
+
+    def configure_optimizers(self):
+        """Configure optimizer with optional learning rate scheduling and weight decay."""
+        optimizer = optim.Adam(
+            self.parameters(), 
+            lr=self.lr, 
+            weight_decay=self.weight_decay
+        )
+        print(f"Using {self.lr_scheduler} scheduler")
+        if self.lr_scheduler == "StepLR":
+            scheduler = StepLR(optimizer, step_size=self.lr_step_size, gamma=self.lr_gamma)
+            return [optimizer], [scheduler]
+        elif self.lr_scheduler == "ExponentialLR":
+            scheduler = ExponentialLR(optimizer, gamma=self.lr_gamma)
+            return [optimizer], [scheduler]
+        elif self.lr_scheduler == "CosineAnnealingLR":
+            scheduler = CosineAnnealingLR(optimizer, T_max=self.lr_step_size)
+            return [optimizer], [scheduler]
+        else:
+            return optimizer

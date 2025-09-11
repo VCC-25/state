@@ -146,16 +146,16 @@ def run_tx_predict(args: ap.ArgumentParser):
         from ...tx.models.old_neural_ot import OldNeuralOTPerturbationModel
 
         ModelClass = OldNeuralOTPerturbationModel
-    elif model_class_name.lower() in ["neuralot", "pertsets"]:
+    elif model_class_name.lower() in ["neuralot", "pertsets", "state"]:
         from ...tx.models.state_transition import StateTransitionPerturbationModel
 
         ModelClass = StateTransitionPerturbationModel
 
-    elif model_class_name.lower() == "globalsimplesum":
+    elif model_class_name.lower() in ["globalsimplesum", "perturb_mean"]:
         from ...tx.models.perturb_mean import PerturbMeanPerturbationModel
 
         ModelClass = PerturbMeanPerturbationModel
-    elif model_class_name.lower() == "celltypemean":
+    elif model_class_name.lower() in ["celltypemean", "context_mean"]:
         from ...tx.models.context_mean import ContextMeanPerturbationModel
 
         ModelClass = ContextMeanPerturbationModel
@@ -338,7 +338,7 @@ def run_tx_predict(args: ap.ArgumentParser):
         # adata_real = anndata.AnnData(X=final_reals, obs=obs, var=var)
         adata_real = anndata.AnnData(X=final_reals, obs=obs)
 
-    # Save the AnnData objects
+    # Save the AnnData objects DAN Maybe not saving during eval_train?
     results_dir = os.path.join(args.output_dir, "eval_" + os.path.basename(args.checkpoint))
     os.makedirs(results_dir, exist_ok=True)
     adata_pred_path = os.path.join(results_dir, "adata_pred.h5ad")
@@ -376,10 +376,11 @@ def run_tx_predict(args: ap.ArgumentParser):
                 outdir=results_dir,
                 prefix=ct,
                 pdex_kwargs=pdex_kwargs,
-                batch_size=2048,
+                batch_size=2048,                
             )
 
-            evaluator.compute(
+            # Buchi add results
+            (results, agg_results) = evaluator.compute(
                 profile=args.profile,
                 metric_configs={
                     "discrimination_score": {
@@ -398,5 +399,7 @@ def run_tx_predict(args: ap.ArgumentParser):
                 }
                 if data_module.embed_key and data_module.embed_key != "X_hvg"
                 else {},
-                skip_metrics=["pearson_edistance", "clustering_agreement"],
+                skip_metrics=["pearson_edistance", "clustering_agreement"],                
             )
+
+            return (results, agg_results)

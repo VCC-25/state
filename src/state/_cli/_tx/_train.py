@@ -1,14 +1,43 @@
 import argparse as ap
+import os
 
 from omegaconf import DictConfig, OmegaConf
-
+from ...tx.callbacks import BatchSpeedMonitorCallback, ScheduledFinetuningCallback
+from ...tx.callbacks.cell_eval_callback import CellEvalCallback
+#from ._predict import run_tx_predict
 
 def add_arguments_train(parser: ap.ArgumentParser):
     # Allow remaining args to be passed through to Hydra
     parser.add_argument("hydra_overrides", nargs="*", help="Hydra configuration overrides (e.g., data.batch_size=32)")
     # Add custom help handler 
     parser.add_argument("--help", "-h", action="store_true", help="Show configuration help with all parameters")
+    
+    # DAN:Hardware-spezifische Argumente - DAN
+    parser.add_argument("--accelerator", type=str, 
+                       choices=["auto", "gpu", "cpu", "mps"], 
+                       default="auto",
+                       help="Force specific accelerator (auto, gpu, cpu, mps)")
+    parser.add_argument("--backend", type=str,
+                       choices=["auto", "cuda", "rocm"],
+                       default="auto", 
+                       help="Force specific GPU backend (auto, cuda, rocm)")
+    parser.add_argument("--mixed_precision", type=str,
+                       choices=["16", "bf16", "32"],
+                       default="32",
+                       help="Mixed precision training")
 
+    # DAN: Cell-eval args
+    parser.add_argument("--eval_during_training", action="store_true", 
+                       help="Enables cell evaluation during training")
+    parser.add_argument("--eval_every_n_steps", type=int, default=500,
+                       help="Cell-eval Evaluation every N steps (default: 500)")
+    parser.add_argument("--pred_data_path", type=str,
+                       help="Path to evaluation test data (.h5ad)")
+    parser.add_argument("--real_data_path", type=str,
+                       help="Path to the control template for evaluation (.h5ad)")
+    parser.add_argument("--eval_metrics", nargs='+', 
+                       default=['mse', 'pearson', 'spearman'],
+                       help="Evaluation metrics for cell-eval")
 
 def run_tx_train(cfg: DictConfig):
     import json
@@ -29,6 +58,70 @@ def run_tx_train(cfg: DictConfig):
     from ...tx.callbacks import BatchSpeedMonitorCallback
     from ...tx.utils import get_checkpoint_callbacks, get_lightning_module, get_loggers
 
+    # DAN: Hardware-Setup-Funktionen
+    def detect_accelerator():
+        """Detect available accelerator with ROCm support"""
+        if torch.cuda.is_available():
+            # Check if it's ROCm or CUDA
+            if torch.version.hip is not None:
+                print(f"ROCm detected: {torch.version.hip}")
+                return "gpu", "rocm"
+            else:
+                print(f"CUDA detected: {torch.version.cuda}")
+                return "gpu", "cuda"
+        elif torch.backends.mps.is_available():
+            print("MPS (Apple Metal) detected")
+            return "mps", "mps"
+        else:
+            print("Using CPU")
+            return "cpu", "cpu"
+
+    def setup_hardware_and_precision(cfg):
+        """Setup hardware accelerator and precision plugins"""
+        
+        # Get user preferences from config
+        force_accelerator = cfg.get("accelerator", "auto")
+        force_backend = cfg.get("backend", "auto") 
+        mixed_precision = cfg.get("mixed_precision", "32")
+        
+        # Detect or use forced accelerator
+        if force_accelerator == "auto":
+            accelerator, backend = detect_accelerator()
+        else:
+            accelerator = force_accelerator
+            if accelerator == "gpu":
+                if force_backend == "auto":
+                    _, backend = detect_accelerator()
+                else:
+                    backend = force_backend
+            else:
+                backend = accelerator
+        
+        print(f"Using accelerator: {accelerator}, backend: {backend}")
+        
+        # Setup precision plugins
+        plugins = []
+        
+        if accelerator == "gpu":
+            device_str = "cuda"  # Both CUDA and ROCm use "cuda" device string
+            
+            if backend == "rocm":
+                print("Configuring for ROCm...")
+                # ROCm-specific optimizations
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                
+            elif backend == "cuda":
+                print("Configuring for CUDA...")
+                
+            # Mixed precision setup (same for both CUDA and ROCm)
+            if mixed_precision == "bf16":
+                plugins.append(MixedPrecision(precision="bf16-mixed", device=device_str))
+            elif mixed_precision == "16":
+                plugins.append(MixedPrecision(precision="16-mixed", device=device_str))
+                
+        return accelerator, backend, plugins
+    
     logger = logging.getLogger(__name__)
     torch.set_float32_matmul_precision("medium")
 
@@ -108,12 +201,12 @@ def run_tx_train(cfg: DictConfig):
         cfg["data"]["kwargs"],
         batch_size=cfg["training"]["batch_size"],
         cell_sentence_len=sentence_len,
+        exclude_datasets=["competition_val_template"],
     )
 
     with open(join(run_output_dir, "data_module.torch"), "wb") as f:
         # TODO-Abhi: only save necessary data
         data_module.save_state(f)
-
     data_module.setup(stage="fit")
     dl = data_module.train_dataloader()
     print("num_workers:", dl.num_workers)
@@ -199,6 +292,51 @@ def run_tx_train(cfg: DictConfig):
     batch_speed_monitor = BatchSpeedMonitorCallback()
     callbacks = ckpt_callbacks + [batch_speed_monitor]
     
+    # DAN eval start
+    # Create arguments for run_tx_predict
+    class MockArgs:
+        def __init__(self, output_dir, checkpoint, profile="minimal", predict_only=False):
+            self.output_dir = output_dir
+            if checkpoint is None:
+                checkpoint = cfg["model"]["kwargs"].get("init_from", None)
+            self.checkpoint = checkpoint # only filename
+            self.test_time_finetune = 0  # No fine-tuning during training
+            self.profile = profile
+            self.predict_only = predict_only
+    # NEU: Cell-eval Callback hinzufügen (falls konfiguriert)
+    if cfg.get("cell_eval", {}).get("enabled", False):
+    #if cfg["cell_eval"]["enabled"]:
+        logger.info("set CellEvalCallback with baseline.")
+        cell_eval_callback = CellEvalCallback(
+            eval_every_n_steps=cfg["cell_eval"].get("eval_every_n_steps", 500),
+            #pred_data_path=cfg["cell_eval"]["pred_data_path"],
+            #real_data_path=cfg["cell_eval"]["real_data_path"],
+            control_pert=cfg["data"]["kwargs"]["control_pert"],
+            pert_col=cfg["data"]["kwargs"]["pert_col"],
+            #eval_metrics=cfg["cell_eval"].get("eval_metrics", ['overlap_at_N', 'mae', 'discrimination_score_l1']),
+            output_dir=run_output_dir,
+            profile="minimal", 
+            save_predictions=cfg["cell_eval"].get("save_predictions", True),
+            log_to_wandb=cfg["use_wandb"],
+            primary_metric="discrimination_score_l1",  # Hauptmetrik
+            metric_weights={
+                "discrimination_score_l1": 1.0,  # 2.0 Doppeltes Gewicht
+                "overlap_at_N": 1.0,  # 1.5
+                "mae": 1.0,
+                "avg_score": 1.0
+            },
+            improvement_threshold=0.001,  # Mindestverbesserung
+            save_best_checkpoint=True,
+            baseline_comparison=True,  # from_baseline Modus
+            verbose=cfg["cell_eval"].get("verbose", True),            
+        )
+        #callbacks.append(cell_eval_callback)
+        callbacks = ckpt_callbacks + [cell_eval_callback]
+        logger.info("Cell-eval Callback added")
+        
+
+    # DAN eval end
+    
     # Add ScheduledFinetuningCallback if finetuning schedule is specified in the config
     finetuning_schedule = cfg["training"].get("finetuning_schedule", None)
     if finetuning_schedule and finetuning_schedule.get("enable", False):
@@ -217,7 +355,8 @@ def run_tx_train(cfg: DictConfig):
 
     logger.info("Loggers and callbacks set up.")
 
-    if cfg["model"]["name"].lower().startswith("scgpt"):
+    # DAN replaced
+    """if cfg["model"]["name"].lower().startswith("scgpt"):
         plugins = [
             MixedPrecision(
                 precision="bf16-mixed",
@@ -232,8 +371,17 @@ def run_tx_train(cfg: DictConfig):
     elif torch.backends.mps.is_available():
         accelerator = "mps"
     else:
-        accelerator = "cpu"
+        accelerator = "cpu"""
     
+    # DAN: Hardware-Setup with ROCm-Support
+    accelerator, backend, plugins = setup_hardware_and_precision(cfg)
+    
+    # Spezial scGPT treatment (if not already covered by mixed_precision)
+    if cfg["model"]["name"].lower().startswith("scgpt") and not plugins:
+        if accelerator == "gpu":
+            device_str = "cuda"  # Both CUDA and ROCm use "cuda"
+            plugins = [MixedPrecision(precision="bf16-mixed", device=device_str)]
+
     # Decide on trainer params
     trainer_kwargs = dict(
         accelerator=accelerator,
@@ -264,8 +412,9 @@ def run_tx_train(cfg: DictConfig):
         checkpoint_path = None
     else:
         logging.info(f"!! Resuming training from {checkpoint_path} !!")
-
-    if torch.mps.is_available():
+    # print(f"DAN, why model=cpu: {next(model.parameters()).device}")
+    # DAN replaced
+    """if torch.mps.is_available():
         print(f"Model device: {next(model.parameters()).device}")
         print(f"METAL memory allocated: {torch.mps.memory_allocated() / 1024**3:.2f} GB")
         print(f"METAL memory reserved: {torch.mps.memory_reserved() / 1024**3:.2f} GB")
@@ -274,7 +423,28 @@ def run_tx_train(cfg: DictConfig):
         print(f"Model device: {next(model.parameters()).device}")
         print(f"CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         print(f"CUDA memory reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+    """
+    # DAN Hardware-Info ausgeben
+    print(f"Model device: {next(model.parameters()).device}")
     
+    if accelerator == "gpu":
+        device_name = torch.cuda.get_device_name() if torch.cuda.is_available() else "Unknown GPU"
+        print(f"GPU Device: {device_name}")
+        print(f"GPU Backend: {backend.upper()}")
+        print(f"GPU Memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        print(f"GPU Memory reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        
+        if backend == "rocm":
+            print("ROCm-specific optimizations enabled")
+        elif backend == "cuda":
+            print("CUDA-specific optimizations enabled")
+            
+    elif accelerator == "mps":
+        print(f"MPS Memory allocated: {torch.mps.memory_allocated() / 1024**3:.2f} GB")
+        print(f"MPS Memory reserved: {torch.mps.memory_reserved() / 1024**3:.2f} GB")
+    else:
+        print("Using CPU - no GPU acceleration")
+
     
     logger.info("Starting trainer fit.")
 
@@ -284,7 +454,14 @@ def run_tx_train(cfg: DictConfig):
     if checkpoint_path is None and manual_init is not None:
         print(f"Loading manual checkpoint from {manual_init}")
         checkpoint_path = manual_init
-        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        # DAN replace: device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        # DAN Use the detected accelerator for device mapping
+        if accelerator == "gpu":
+            device = torch.device("cuda")
+        elif accelerator == "mps":
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_state = model.state_dict()
         checkpoint_state = checkpoint["state_dict"]
@@ -306,6 +483,7 @@ def run_tx_train(cfg: DictConfig):
                 else:  # output_space == "all"
                     new_gene_dim = var_dims.get("gene_dim", 2000)
                 
+                logger.info(f"New gene dimension for output_space='{current_output_space}': {new_gene_dim}")
                 new_decoder_cfg = dict(
                     latent_dim=var_dims["output_dim"],
                     gene_dim=new_gene_dim,

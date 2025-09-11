@@ -1,0 +1,1 @@
+python -c "import h5py; f = h5py.File('datasets/base_dataset/competition_train.h5', 'r'); print(list(f['obs/target_gene']['categories']))"

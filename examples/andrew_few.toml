@@ -1,0 +1,25 @@
+[datasets]
+competition = "competition_support_set"
+
+[training]
+competition = "train"
+
+[zeroshot]
+
+[fewshot."competition.k562"]
+val = [ "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+
+[fewshot."competition.ARC_H1"]
+val = [ "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+
+[fewshot."competition.hepg2"]
+val = [ "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+
+[fewshot."competition.jurkat"]
+val = [ "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+
+[fewshot."competition.rpe1"]
+val = [ "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]
+
+[fewshot."competition.k562_gwps"]
+val = [ "ACAT2", "ARID1A", "ATP6V0C", "CLDN6", "CLDN7", "ETV4", "HDAC8", "HTATSF1", "IDE", "INSIG1", "JAZF1", "JMJD8", "KDM2B", "KLF10", "LZTR1", "MAP3K7", "MAT2A", "MED1", "METTL14", "NDUFB4", "PHF14", "RNF20", "SLC25A3", "SMAGP", "SMARCB1", "SSBP1", "TCF3", "USF2", "WAC", "ZNF714",]

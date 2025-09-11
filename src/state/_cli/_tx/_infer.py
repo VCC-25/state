@@ -73,7 +73,19 @@ def run_tx_infer(args):
 
     # Load model
     logger.info(f"Loading model from checkpoint: {checkpoint_path}")
-    model = StateTransitionPerturbationModel.load_from_checkpoint(checkpoint_path)
+    # here to eval() was:  model = StateTransitionPerturbationModel.load_from_checkpoint(checkpoint_path)
+    # need somthing else to deal with shape mismatch though
+    model_kwargs = cfg['model']['kwargs']
+
+    # 3. Instantiate the model with the correct architecture first
+    print("INFO: Re-instantiating model with loaded hyperparameters...")
+    model = StateTransitionPerturbationModel(**model_kwargs)
+
+    # 4. Load the weights from the checkpoint into the correctly-structured model
+    print(f"INFO: Loading weights from checkpoint: {checkpoint_path}")
+    # Use weights_only=False because your hparams contain numpy types
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    model.load_state_dict(checkpoint['state_dict'])
     model.eval()
     cell_sentence_len = model.cell_sentence_len
     device = next(model.parameters()).device
@@ -95,10 +107,16 @@ def run_tx_infer(args):
             raise ValueError(f"Column '{args.celltype_col}' not found in adata.obs.")
         logger.info(f"No cell type filtering applied, but cell type column '{args.celltype_col}' is available.")
 
+
     # Get input features
     if args.embed_key in adata.obsm:
         X = adata.obsm[args.embed_key]
         logger.info(f"Using adata.obsm['{args.embed_key}'] as input features: shape {X.shape}")
+        
+
+        logger.info(f"First 5 rows of adata.obsm['{args.embed_key}']: {X[:5]}")
+
+        logger.info(f"Type of X: {type(X)}")
     else:
         try:
             X = adata.X.toarray()
@@ -194,12 +212,14 @@ def run_tx_infer(args):
                 # Extend perturbation names
                 pert_names_batch.extend([control_pert] * padding_size)
 
-            # Prepare batch - use same format as working code
+            # Create batch index tensor (shape [S], dtype long). Use 0 as neutral reference batch.
+            batch_indices = torch.zeros(cell_sentence_len, dtype=torch.long, device=device)
+
             batch = {
                 "ctrl_cell_emb": X_batch,
-                "pert_emb": pert_batch,  # Keep as 2D tensor
+                "pert_emb": pert_batch,
                 "pert_name": pert_names_batch,
-                "batch": torch.zeros((1, cell_sentence_len), device=device),  # Use (1, cell_sentence_len)
+                "batch": batch_indices,  # indices, not a 2D zeros array
             }
 
             # Run inference on batch using padded=False like in working code
@@ -226,11 +246,16 @@ def run_tx_infer(args):
     # Concatenate all predictions
     preds_np = np.concatenate(all_preds, axis=0)
 
-    # Save predictions to AnnData
-    adata.X = preds_np
+    if args.embed_key in adata.obsm:
+        adata.obsm[args.embed_key] = preds_np
+    else:
+        adata.X = preds_np
+        
     output_path = args.output or args.adata.replace(".h5ad", "_with_preds.h5ad")
     adata.write_h5ad(output_path)
-    logger.info(f"Saved predictions to {output_path} (in adata.X)")
+    logger.info(f"Saved predictions to {output_path} (in adata.X for HVGs and in .layers['preds_hvg'])")
+
+
 
 
 def main():

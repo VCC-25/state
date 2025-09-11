@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../cell-eval"
+		},
+		{
+			"path": "../../../../../llm_predictions"
+		},
+		{
+			"path": "../../../../../state_playground"
+		}
+	],
+	"settings": {}
+}
