@@ -528,6 +528,8 @@ def run_tx_predict(args: ap.ArgumentParser):
             optimizations['batch_size'] = args.prediction_batch_size
         
         logger.info("🚀 Prediction Optimizations:")
+        logger.info(f"   • GPU: {'✅' if torch.cuda.is_available() else '❌'}")
+        logger.info(f"   • Advanced Prefetch: {'✅' if optimizations['advanced_prefetch'] else '❌'}")
         logger.info(f"   • Memory Mapping: {'✅' if optimizations['enable_memory_mapping'] else '❌'}")
         logger.info(f"   • Prefetching: {'✅' if optimizations['prefetch_predictions'] else '❌'}")
         logger.info(f"   • Advanced Prefetch: {'✅' if optimizations['advanced_prefetch'] else '❌'}")
@@ -889,6 +891,7 @@ def run_tx_predict(args: ap.ArgumentParser):
 
     # NEW: Setup prediction optimizations - ADD AFTER model.eval()
     device = next(model.parameters()).device
+
     optimizations = setup_prediction_optimizations(args, device)
 
     # Setup prediction DataLoader with optimizations
