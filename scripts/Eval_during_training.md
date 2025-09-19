@@ -22,6 +22,7 @@ save_predictions = true          # Saves predictions for further analysis
 verbose = true                   # Detailed outputs
 ```
 
+
 #### 2. Command Line Parameters (NEW)
 
 In addition to TOML configuration, Cell-Eval parameters can now be set directly via command line:
@@ -31,6 +32,7 @@ In addition to TOML configuration, Cell-Eval parameters can now be set directly 
 +cell_eval.eval_every_n_steps=500 \
 +cell_eval.plot_every_n_evals=1
 ```
+-> will overwrite the TOML settings 
 
 ### Complete Training Example
 

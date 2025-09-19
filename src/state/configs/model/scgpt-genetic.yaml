@@ -24,7 +24,7 @@ kwargs:
   cell_emb_style: "cls"
   mvc_decoder_style: "inner product, detach"
   use_amp: true
-  pretrained_path: "/large_storage/goodarzilab/userspace/mohsen/scGPT/scGPT_human/"
+  pretrained_path: "datasets/scGPT_human/"
   load_param_prefixes:
     - "encoder"
     - "value_encoder"

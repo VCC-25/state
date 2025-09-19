@@ -1,13 +1,4 @@
 #!/bin/bash
-#SBATCH --job-name=pipe_dan_train
-#SBATCH --partition=main  # or whatever partition is available
-#SBATCH --qos=standard        # or whatever QoS is available
-#SBATCH --mem=80G
-#SBATCH --time=2:00:00
-#SBATCH --cpus-per-task=4
-
-#SBATCH --output=slurm/pipe_dan_train_%j.out
-#SBATCH --error=slurm/pipe_dan_train_%j.err
 # infering for the competition submission and getting the .vcc file
 
 # -- Config --
@@ -15,10 +6,10 @@
 MODEL_DIR="results/"
 
 # experiment name
-DIR_NAME="sm_better_hyper-dan"
+DIR_NAME="scgpt-first-test"
 
 # toml config path
-TOML_CONFIG="scripts/robin/training_with_cell_eval_robin.toml"
+TOML_CONFIG="scripts/robin/all_data.toml"
 
 # Competition support set -> why is this important? 
 COMPETITION_SUPPORT_SET="datasets/base_dataset"
@@ -76,66 +67,34 @@ fi
 echo "#### Running training ####"
 
 #use learning rate 1e-5
-# uv run state tx train \
-#   data.kwargs.toml_config_path=${TOML_CONFIG} \
-#   data.kwargs.num_workers=${NUM_WORKERS} \
-#   data.kwargs.batch_col=batch_var \
-#   data.kwargs.pert_col=target_gene \
-#   data.kwargs.cell_type_key=cell_type \
-#   data.kwargs.control_pert=non-targeting \
-#   data.kwargs.perturbation_features_file=${PERT_FEATURES} \
-#   training.max_steps=40000 \
-#   training.ckpt_every_n_steps=400 \
-#   training.val_freq=200 \
-#   model=state_sm \
-#   model.kwargs.nb_decoder=true \
-#   wandb.tags=[${DIR_NAME}] \
-#   output_dir=${MODEL_DIR} \
-#   name=${DIR_NAME} \
-#   training.lr=1e-5 \
-#   use_wandb=false \
-#   model.kwargs.n_encoder_layers=3 \
-#   model.kwargs.n_decoder_layers=3 \
-#   model.kwargs.cell_set_len=256 \
-
-\
-#model.kwargs.transformer_backbone_kwargs.num_hidden_layers=2 \
-
-#NEW TRAIN COMMAND - Daniel 
-
-srun --gres=gpu:h100:4 --nodelist=g016 --job-name=pipe_dan_train --partition=scavenger --qos=standard --mem=80G --time=2:00:00 --cpus-per-task=4 state tx train \
+state tx train \
   data.kwargs.toml_config_path=${TOML_CONFIG} \
   data.kwargs.num_workers=${NUM_WORKERS} \
-  data.kwargs.batch_col="batch_var" \
-  data.kwargs.pert_col="target_gene" \
-  data.kwargs.cell_type_key="cell_type" \
-  data.kwargs.control_pert="non-targeting" \
+  data.kwargs.batch_col=batch_var \
+  data.kwargs.pert_col=target_gene \
+  data.kwargs.cell_type_key=cell_type \
+  data.kwargs.control_pert=non-targeting \
   data.kwargs.perturbation_features_file=${PERT_FEATURES} \
-  training.lr=0.00001 \
-  ++training.weight_decay=0.01 \
-  training.gradient_clip_val=0.5 \
-  training.max_steps=40000 \
-  training.val_freq=400 \
+  +data.kwargs.train_task="replogle" \
+  training.max_steps=400 \
   training.ckpt_every_n_steps=400 \
-  training.batch_size=64 \
-  +model.dropout=0.2 \
-  +optimizer.max_lr=1e-6 \
-  +model.devices=cuda \
-  +model.backend=rocm \
-  model=state_sm \
-  wandb.tags="[${DIR_NAME}]" \
+  training.val_freq=200 \
+  model=scgpt-genetic \
+  model.kwargs.nb_decoder=true \
   output_dir=${MODEL_DIR} \
   name=${DIR_NAME} \
-  +trainer.accelerator=gpu \
-  +trainer.devices=1 \
-  +trainer.backend=rocm \
-  +trainer.precision=16 \
-  +cell_eval.enabled=true \
-  +cell_eval.eval_every_n_steps=400 \
-  +cell_eval.plot_every_n_evals=2 \
-  data.kwargs.pin_memory=true 2>&1 | tee logs/readable_training.log
+  training.lr=1e-5 \
+  use_wandb=false \
 
-python3.11 scripts/prepare_holdout_ground_truth.py \
+'''
+#wandb.tags=[${DIR_NAME}] \
+  #model.kwargs.n_encoder_layers=3 \
+  #model.kwargs.n_decoder_layers=3 \
+  #model.kwargs.cell_set_len=256 \
+#model.kwargs.transformer_backbone_kwargs.num_hidden_layers=2 \
+
+
+python scripts/prepare_holdout_ground_truth.py \
   --toml_config ${TOML_CONFIG} \
   --split test \
   --output_dir ${OUT_DIR} \
@@ -213,3 +172,4 @@ uv run state tx infer \
 echo "#### Running cell-eval prep ####"
 # # remember to have `sudo apt install -y zstd` before running this
 # uv tool run --from git+https://github.com/ArcInstitute/cell-eval@main cell-eval prep -i ${MODEL_DIR}/${DIR_NAME}/competition_val_prediction.h5ad -g ${COMPETITION_SUPPORT_SET}/gene_names.csv
+'''
