@@ -30,7 +30,8 @@ except ImportError:
         
         @staticmethod
         def ix_(*args):
-            # Simple implementation for basic indexing
+            # Simple implementation for basic indexing - just return the args
+            # The calling code should handle this appropriately
             return args
     
     np = MockNumpy()
@@ -155,9 +156,14 @@ def set_gene_expression_for_target(
                     X[cell_idx, gene_indices[0]] = value
             else:
                 # Multiple genes case
-                if hasattr(np, 'ix_'):
-                    X[np.ix_(target_cells, gene_indices)] = value
-                else:
+                try:
+                    # Test if ix_ works properly
+                    test_result = np.ix_([0], [0])
+                    if hasattr(test_result, '__len__') and len(test_result) == 2:
+                        X[np.ix_(target_cells, gene_indices)] = value
+                    else:
+                        raise AttributeError("Mock ix_ detected")
+                except (AttributeError, TypeError, IndexError):
                     # Manual assignment fallback
                     for i, cell_idx in enumerate(target_cells):
                         for j, gene_idx in enumerate(gene_indices):
@@ -176,9 +182,14 @@ def set_gene_expression_for_target(
                     X_lil[cell_idx, gene_indices[0]] = value
             else:
                 # Multiple genes case - need to handle indexing carefully
-                if hasattr(np, 'ix_'):
-                    X_lil[np.ix_(target_cells, gene_indices)] = value
-                else:
+                try:
+                    # Test if ix_ works properly
+                    test_result = np.ix_([0], [0])
+                    if hasattr(test_result, '__len__') and len(test_result) == 2:
+                        X_lil[np.ix_(target_cells, gene_indices)] = value
+                    else:
+                        raise AttributeError("Mock ix_ detected")
+                except (AttributeError, TypeError, IndexError):
                     # Fallback for manual indexing
                     for i, cell_idx in enumerate(target_cells):
                         for j, gene_idx in enumerate(gene_indices):
@@ -197,10 +208,16 @@ def set_gene_expression_for_target(
                 X[cell_idx, gene_indices[0]] = value
         else:
             # Multiple genes case  
-            if hasattr(np, 'ix_'):
-                X[np.ix_(target_cells, gene_indices)] = value
-            else:
-                # Manual assignment fallback
+            # Check if we have real numpy with proper ix_ support
+            try:
+                # Test if ix_ works properly by trying a simple operation
+                test_result = np.ix_([0], [0])
+                if hasattr(test_result, '__len__') and len(test_result) == 2:
+                    X[np.ix_(target_cells, gene_indices)] = value
+                else:
+                    raise AttributeError("Mock ix_ detected")
+            except (AttributeError, TypeError, IndexError):
+                # Fallback to manual assignment
                 for i, cell_idx in enumerate(target_cells):
                     for j, gene_idx in enumerate(gene_indices):
                         if hasattr(value, '__getitem__') and hasattr(value[0], '__getitem__'):
