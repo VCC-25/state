@@ -1,32 +1,32 @@
 # Basic checklist (assuming you've ran before with "similar" setup)
 
 - Datasets
-    - [] Embeddings file exists:
+    - [x] Embeddings file exists:
         - `PERT_FEATURES="datasets/embeddings/ESM2_pert_features.pt"`
-    - [] `TOML_CONFIG="scripts/robin/all_data.toml"` exists and has your desired training data.
+    - [x] `TOML_CONFIG="scripts/robin/all_data.toml"` exists and has your desired training data.
 
 - Output targeting
-  - [] `MODEL_DIR="results/"` and `DIR_NAME=""` are what you intend.
-  - [] Does DIR_NAME exist with previous checkpoints? Load, delete, or move
+  - [x] `MODEL_DIR="results/"` and `DIR_NAME=""` are what you intend.
+  - [x] Does DIR_NAME exist with previous checkpoints? Load, delete, or move
 
 - Training
-    - [] default steps, ckpts, and val_freq correct?
+    - [x] default steps, ckpts, and val_freq correct?
             training.max_steps=40000 \
             training.ckpt_every_n_steps=500 \
             training.val_freq=250 \
-    - [] learning reate correct? default 1e-4, my preferred is 1e-5
-    - [] checked uv state tx 
+    - [x] learning reate correct? default 1e-4, my preferred is 1e-5
+    - [x] checked uv state tx 
         - model set correctly?   model=state_sm \
         - 
 
 - Weights & Biases
-  - [] `use_wandb=false`; if you want logging, set `use_wandb=true` and ensure login/environment.
+  - [x] `use_wandb=false`; if you want logging, set `use_wandb=true` and ensure login/environment.
 
 - Starting ...
   - [] Run from the repo root `state/` (script paths are relative).
-  - [ ] Are we starting from "screen" 
+  - [ ] Are we starting from "screen" (for compute01)
   - [] sbatch: 
-  - [] .venv activated?
+
 
 
 - USING NEW/UNTESTED DATASETs? 

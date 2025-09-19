@@ -246,7 +246,7 @@ def run_tx_train(cfg: DictConfig):
         pickle.dump(var_dims, f)
 
     if cfg["model"]["name"].lower() in ["cpa", "scvi"] or cfg["model"]["name"].lower().startswith("scgpt"):
-        cfg["model"]["kwargs"]["n_cell_types"] = len(data_module.celltype_onehot_map)
+        cfg["model"]["kwargs"]["n_cell_types"] = len(data_module.cell_type_onehot_map)
         cfg["model"]["kwargs"]["n_perts"] = len(data_module.pert_onehot_map)
         cfg["model"]["kwargs"]["n_batches"] = len(data_module.batch_onehot_map)
 
