@@ -287,3 +287,123 @@ def get_shapes_dict(dataset_path, filter_by_species=None):
             shapes_dict[name] = (int(ncells), 8000)
 
     return datasets_df, sorted_dataset_names, shapes_dict, dataset_path_map, dataset_group_map
+
+
+def set_gene_expression_for_target(adata, target_genes=None, expression_values=None, target_cells=None):
+    """
+    Set gene expression for target genes/cells, creating a copy of the anndata object
+    instead of modifying it in-place.
+    
+    This function ensures data integrity by preserving the original anndata object
+    while creating a modified copy with the new gene expression values.
+    
+    Parameters
+    ----------
+    adata : AnnData
+        Input anndata object containing gene expression data
+    target_genes : list, str, or array-like, optional
+        Target genes to modify. Can be gene names (if in adata.var_names) or indices.
+        If None, no gene filtering is applied.
+    expression_values : array-like, optional
+        New expression values to set for the target genes/cells.
+        Shape should be (n_target_cells, n_target_genes) or compatible for broadcasting.
+        If None, no modifications are applied.
+    target_cells : array-like, optional
+        Target cells to modify. If None, applies to all cells.
+        Can be cell indices or boolean mask.
+        
+    Returns
+    -------
+    AnnData
+        A copy of the input anndata with modified gene expression values.
+        The original adata object remains unchanged.
+        
+    Raises
+    ------
+    ValueError
+        If target_genes contains gene names not found in adata.var_names,
+        or if expression_values shape doesn't match target dimensions.
+        
+    Examples
+    --------
+    >>> import anndata
+    >>> import numpy as np
+    >>> # Create test data
+    >>> adata = anndata.AnnData(np.random.rand(100, 10))
+    >>> adata.var_names = [f'GENE{i}' for i in range(10)]
+    
+    >>> # Set expression for specific genes in all cells
+    >>> adata_modified = set_gene_expression_for_target(
+    ...     adata, 
+    ...     target_genes=['GENE0', 'GENE1'], 
+    ...     expression_values=np.ones((100, 2)) * 5.0
+    ... )
+    
+    >>> # Set expression for specific genes in specific cells
+    >>> adata_modified = set_gene_expression_for_target(
+    ...     adata,
+    ...     target_genes=['GENE0'], 
+    ...     expression_values=np.ones((3, 1)) * 10.0,
+    ...     target_cells=[0, 1, 2]
+    ... )
+    
+    >>> # Original adata remains unchanged
+    >>> assert not np.array_equal(adata.X, adata_modified.X)
+    """
+    # Create a copy to preserve original data integrity
+    adata_copy = adata.copy()
+    
+    # If no modifications are specified, return the copy as-is
+    if target_genes is None and expression_values is None:
+        return adata_copy
+    
+    # Convert target_genes to indices if they are gene names
+    if target_genes is not None:
+        if isinstance(target_genes, str):
+            target_genes = [target_genes]
+        
+        gene_indices = []
+        for gene in target_genes:
+            if isinstance(gene, str):
+                if gene in adata_copy.var_names:
+                    gene_indices.append(adata_copy.var_names.get_loc(gene))
+                else:
+                    raise ValueError(f"Gene '{gene}' not found in adata.var_names")
+            else:
+                # Assume it's already an index
+                gene_indices.append(gene)
+    else:
+        gene_indices = None
+    
+    # Set default target_cells to all cells if not specified
+    if target_cells is None:
+        target_cells = list(range(adata_copy.n_obs))
+    
+    # Apply expression modifications if specified
+    if expression_values is not None and gene_indices is not None:        
+        expression_values = np.array(expression_values)
+        
+        # Ensure expression_values has the right shape
+        if expression_values.ndim == 1:
+            if len(expression_values) == len(gene_indices):
+                # Same value for all target cells
+                expression_values = expression_values.reshape(1, -1)
+                expression_values = np.repeat(expression_values, len(target_cells), axis=0)
+            elif len(expression_values) == len(target_cells):
+                # One value per cell, same gene
+                expression_values = expression_values.reshape(-1, 1)
+                expression_values = np.repeat(expression_values, len(gene_indices), axis=1)
+        
+        # Validate dimensions
+        if expression_values.shape != (len(target_cells), len(gene_indices)):
+            raise ValueError(
+                f"expression_values shape {expression_values.shape} does not match "
+                f"expected shape ({len(target_cells)}, {len(gene_indices)})"
+            )
+        
+        # Apply the modifications to the copy
+        for i, cell_idx in enumerate(target_cells):
+            for j, gene_idx in enumerate(gene_indices):
+                adata_copy.X[cell_idx, gene_idx] = expression_values[i, j]
+    
+    return adata_copy
