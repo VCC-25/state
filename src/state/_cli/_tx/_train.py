@@ -587,36 +587,17 @@ def run_tx_train(cfg: DictConfig):
         print("trainer.fit() completed with manual checkpoint")
     else:
         print(f"About to call trainer.fit() with checkpoint_path={checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        #for reloading from a given checkpoint
+        #checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         #Not loading the optimizer! Is not optimal! #todo
-        model.load_state_dict(checkpoint["state_dict"], strict=False)
+        #model.load_state_dict(checkpoint["state_dict"], strict=False)
 
-        opt_state = checkpoint.get("optimizer_states", [])
-        if not opt_state:
-            print("❌ No optimizer_states found in checkpoint.")
-        else:
-            print("🔹 Number of optimizer groups in checkpoint:", len(opt_state[0]["param_groups"]))
-            for i, group in enumerate(opt_state[0]["param_groups"]):
-                print(f"\n🧩 Checkpoint group {i}")
-                print(f" - learning_rate: {group.get('lr')}")
-                print(f" - weight_decay: {group.get('weight_decay')}")
-                print(f" - number of parameters: {len(group['params'])}")
-
-        optimizer = model.configure_optimizers()
-        # Handle possible tuple/dict returns
-        if isinstance(optimizer, dict):
-            optimizer = optimizer["optimizer"]
-        elif isinstance(optimizer, (list, tuple)):
-            optimizer = optimizer[0]
-        print("model optimizer")
-        for a in optimizer:
-            print(a)
-
+        # Train
         trainer.fit(
             model,
             datamodule=data_module,
-          ckpt_path=checkpoint_path,  
-        )#
+            ckpt_path=checkpoint_path,
+        )
         print("trainer.fit() completed")
 
     print("Training completed, saving final checkpoint...")
