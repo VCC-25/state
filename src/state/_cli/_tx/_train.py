@@ -453,6 +453,12 @@ def run_tx_train(cfg: DictConfig):
         checkpoint_path = None
     else:
         logging.info(f"!! Resuming training from {checkpoint_path} !!")
+
+
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        #Not loading the optimizer! Is not optimal! #todo
+        model.load_state_dict(checkpoint["state_dict"], strict=False)
+
     # print(f"DAN, why model=cpu: {next(model.parameters()).device}")
     # DAN replaced
     """if torch.mps.is_available():
@@ -587,16 +593,12 @@ def run_tx_train(cfg: DictConfig):
         print("trainer.fit() completed with manual checkpoint")
     else:
         print(f"About to call trainer.fit() with checkpoint_path={checkpoint_path}")
-        #for reloading from a given checkpoint
-        #checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        #Not loading the optimizer! Is not optimal! #todo
-        #model.load_state_dict(checkpoint["state_dict"], strict=False)
-
+ 
         # Train
         trainer.fit(
             model,
             datamodule=data_module,
-            ckpt_path=checkpoint_path,
+            #ckpt_path=checkpoint_path,#commenting this out is just a quick
         )
         print("trainer.fit() completed")
 
